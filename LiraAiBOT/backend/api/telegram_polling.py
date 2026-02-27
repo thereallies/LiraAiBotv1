@@ -688,6 +688,10 @@ async def process_message(message: Dict[str, Any], bot_token: str):
 • /admin set_level [user_id] [level] - Выдать уровень
 • /admin remove_level [user_id] - Снять уровень
 
+📢 Рассылка уведомлений:
+• /admin broadcast [сообщение] - Рассылка всем пользователям
+• /admin mes [сообщение] - Короткая команда для рассылки
+
 🔧 Тех.работы:
 • /admin maintenance [HH:MM] - Включить тех.работы
 • /admin maintenance_off - Выключить тех.работы
@@ -702,6 +706,8 @@ async def process_message(message: Dict[str, Any], bot_token: str):
 • user - 3 генерации в день
 
 💡 Примеры:
+/admin mes Друзья, Grok недоступен, пользуйтесь OpenRouter
+/admin broadcast Важное обновление! Бот теперь работает быстрее
 /admin set_level 123456789 subscriber
 /admin maintenance 17:00
 /admin maintenance_off
@@ -935,6 +941,63 @@ async def process_message(message: Dict[str, Any], bot_token: str):
                     await send_telegram_message(chat_id, users_text)
                     return
 
+                # Админ команда: broadcast / mes - рассылка уведомлений всем пользователям
+                if text.startswith("/admin broadcast ") or text.startswith("/admin mes "):
+                    from backend.database.users_db import get_database
+                    db = get_database()
+
+                    if not db.is_admin(user_id):
+                        await send_telegram_message(chat_id, "❌ У вас нет прав администратора")
+                        return
+
+                    # Парсим команду: /admin broadcast [сообщение] или /admin mes [сообщение]
+                    message = text.replace("/admin broadcast ", "").replace("/admin mes ", "").strip()
+
+                    if not message:
+                        await send_telegram_message(
+                            chat_id,
+                            "❌ Использование: /admin broadcast [сообщение]\n\nПример: /admin mes Друзья, Grok сейчас недоступен, пользуйтесь моделями OpenRouter"
+                        )
+                        return
+
+                    # Получаем всех пользователей
+                    all_users = db.get_all_users_for_notification()
+
+                    # Отправляем сообщение о начале рассылки
+                    await send_telegram_message(
+                        chat_id,
+                        f"📢 Начинаю рассылку уведомления {len(all_users)} пользователям...\n\nСообщение: {message[:100]}{'...' if len(message) > 100 else ''}"
+                    )
+
+                    # Рассылаем сообщение всем пользователям
+                    success_count = 0
+                    fail_count = 0
+
+                    for uid in all_users:
+                        try:
+                            # Пропускаем самого админа (он уже получил сообщение)
+                            if uid == str(user_id):
+                                success_count += 1
+                                continue
+
+                            await send_telegram_message(
+                                uid,
+                                f"📢 **Уведомление от администратора**\n\n{message}"
+                            )
+                            success_count += 1
+                            # Небольшая задержка чтобы не заблокировали API
+                            await asyncio.sleep(0.1)
+                        except Exception as e:
+                            logger.error(f"❌ Ошибка отправки уведомления пользователю {uid}: {e}")
+                            fail_count += 1
+
+                    # Отправляем отчет админу
+                    await send_telegram_message(
+                        chat_id,
+                        f"✅ Рассылка завершена!\n\n📊 Результат:\n• Успешно: {success_count}\n• Ошибок: {fail_count}\n• Всего: {len(all_users)}"
+                    )
+                    return
+
                 # Админ команда: stats
                 if text == "/admin stats":
                     from backend.database.users_db import get_database
@@ -1136,7 +1199,7 @@ async def handle_feedback_bot_photo(chat_id: str, user_id: str, message: Dict[st
         logger.debug(f"[FeedbackBot] Промпт для анализа: {prompt}")
         
         description = await analyzer.analyze_image(downloaded_path, prompt)
-        logger.info(f"[FeedbackBot] ✅ Изображение проанализировано: {len(description)} символов описания")
+        logger.info(f"[FeedbackBot] ✅ Изображение проанализиров��но: {len(description)} символов описания")
         
         # Удаляем временный файл
         try:
