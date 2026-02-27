@@ -1,0 +1,44 @@
+# FastAPI и веб-сервер
+fastapi>=0.110,<1.0
+uvicorn[standard]>=0.20.0
+python-multipart
+aiofiles
+pydantic>=2.4,<3
+
+# Работа с переменными окружения
+python-dotenv
+
+# HTTP клиент
+aiohttp
+requests
+
+# Работа с данными
+numpy
+pandas
+
+# Машинное обучение и эмбеддинги
+transformers
+omegaconf
+huggingface_hub>=0.23.0
+
+# LLM интеграция
+tiktoken
+openai>=1.0.0
+
+# Голосовые технологии
+gtts>=2.3.0
+SpeechRecognition
+librosa
+soundfile
+pydub
+
+# Обработка изображений
+Pillow
+
+# Telegram клиент
+telethon>=1.34.0
+
+# Дополнительные утилиты
+starlette
+typing-extensions
+
