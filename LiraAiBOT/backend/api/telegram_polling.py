@@ -1912,11 +1912,10 @@ async def start_telegram_polling():
         else:
             logger.error("TELEGRAM_BOT_TOKEN не настроен")
             return
-    
+
     # Используем только первый токен
     token = tokens[0]
-    logger.info(f"📱 Запуск Telegram polling для бота...")
-    
+
     # Запускаем polling
     await start_polling_for_bot(token, "Bot")
 
