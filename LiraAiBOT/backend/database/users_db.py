@@ -147,7 +147,7 @@ class BotDatabase:
                 "username": username,
                 "first_name": first_name,
                 "last_name": last_name,
-                "access_level": "user"
+                "access_level": "user"  # По умолчанию user
             }
         else:
             if username:
@@ -169,21 +169,23 @@ class BotDatabase:
                 }
                 
                 # Проверяем существует ли пользователь
-                result = supabase.table("users").select("user_id").eq("user_id", user_id).execute()
+                result = supabase.table("users").select("user_id, access_level").eq("user_id", user_id).execute()
                 
                 if result.data:
                     # Обновляем
                     supabase.table("users").update(data).eq("user_id", user_id).execute()
+                    # Обновляем кэш access_level
+                    _user_cache[user_id]["access_level"] = result.data[0].get("access_level", "user")
                 else:
                     # Создаём
                     supabase.table("users").insert(data).execute()
-                    
                     # Создаём лимиты
                     supabase.table("generation_limits").insert({
                         "user_id": user_id,
                         "daily_count": 0,
                         "total_count": 0
                     }).execute()
+                    # Кэш остаётся "user"
                     
             except Exception as e:
                 # Логируем ошибку но не падаем - кэш работает
@@ -243,10 +245,17 @@ class BotDatabase:
         return "user"
 
     def set_user_access_level(self, user_id: str, level: str) -> bool:
-        """Устанавливает уровень доступа пользователя"""
+        """Устанавливает уровень доступа пользователя (с кэшем)"""
         if level not in ACCESS_LEVELS:
             return False
         
+        # Сразу обновляем кэш!
+        if user_id not in _user_cache:
+            _user_cache[user_id] = {"user_id": user_id, "access_level": level}
+        else:
+            _user_cache[user_id]["access_level"] = level
+        
+        # Если используем Supabase
         if USE_SUPABASE and supabase:
             try:
                 supabase.table("users").update({"access_level": level}).eq("user_id", user_id).execute()
@@ -255,13 +264,16 @@ class BotDatabase:
                 logger.error(f"❌ Ошибка Supabase в set_user_access_level: {e}")
                 return False
         
-        # SQLite версия
-        conn = self._get_connection()
-        cursor = conn.cursor()
-        cursor.execute("UPDATE users SET access_level = ? WHERE user_id = ?", (level, user_id))
-        conn.commit()
-        conn.close()
-        return True
+        # SQLite только для локальной разработки
+        if not USE_SUPABASE:
+            conn = self._get_connection()
+            cursor = conn.cursor()
+            cursor.execute("UPDATE users SET access_level = ? WHERE user_id = ?", (level, user_id))
+            conn.commit()
+            conn.close()
+            return True
+        
+        return False
 
     def get_user_stats(self, user_id: str) -> Optional[Dict[str, Any]]:
         """Получает статистику пользователя"""
