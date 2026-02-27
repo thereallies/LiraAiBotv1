@@ -11,7 +11,7 @@ from pathlib import Path
 
 logger = logging.getLogger("bot.database")
 
-# Путь к SQLite базе данных
+# Путь к SQLite базе данных (только для локальной разработки)
 DB_PATH = Path(__file__).parent.parent.parent / "data" / "bot.db"
 
 # Создаем директорию если не существует
@@ -38,6 +38,10 @@ if USE_SUPABASE and SUPABASE_URL and SUPABASE_KEY:
 
 if not USE_SUPABASE:
     logger.info("ℹ️ Используем SQLite базу данных")
+
+# Кэш пользователей в памяти (user_id -> данные)
+_user_cache: Dict[str, Dict] = {}
+_limits_cache: Dict[str, Dict] = {}
 
 # Уровни доступа и квоты
 ACCESS_LEVELS = {
@@ -134,7 +138,26 @@ class BotDatabase:
 
     def add_or_update_user(self, user_id: str, username: str = None,
                           first_name: str = None, last_name: str = None):
-        """Добавляет или обновляет пользователя"""
+        """Добавляет или обновляет пользователя (только Supabase + кэш)"""
+        
+        # Обновляем кэш
+        if user_id not in _user_cache:
+            _user_cache[user_id] = {
+                "user_id": user_id,
+                "username": username,
+                "first_name": first_name,
+                "last_name": last_name,
+                "access_level": "user"
+            }
+        else:
+            if username:
+                _user_cache[user_id]["username"] = username
+            if first_name:
+                _user_cache[user_id]["first_name"] = first_name
+            if last_name:
+                _user_cache[user_id]["last_name"] = last_name
+        
+        # Если используем Supabase - отправляем данные
         if USE_SUPABASE and supabase:
             try:
                 data = {
@@ -145,78 +168,79 @@ class BotDatabase:
                     "last_seen": datetime.now().isoformat()
                 }
                 
-                # upsert - вставить или обновить
-                supabase.table("users").upsert(data).execute()
+                # Проверяем существует ли пользователь
+                result = supabase.table("users").select("user_id").eq("user_id", user_id).execute()
                 
-                # Проверяем существует ли пользователь для инициализации лимитов
-                result = supabase.table("generation_limits").select("user_id").eq("user_id", user_id).execute()
-                if not result.data:
+                if result.data:
+                    # Обновляем
+                    supabase.table("users").update(data).eq("user_id", user_id).execute()
+                else:
+                    # Создаём
+                    supabase.table("users").insert(data).execute()
+                    
+                    # Создаём лимиты
                     supabase.table("generation_limits").insert({
                         "user_id": user_id,
                         "daily_count": 0,
                         "total_count": 0
                     }).execute()
                     
-                return
             except Exception as e:
-                logger.error(f"❌ Ошибка Supabase в add_or_update_user: {e}")
-                # Fallback на SQLite
-                logger.info("ℹ️ Fallback на SQLite")
+                # Логируем ошибку но не падаем - кэш работает
+                logger.warning(f"⚠️ Supabase недоступен, работаем в памяти: {e}")
         
-        # SQLite версия
-        conn = self._get_connection()
-        cursor = conn.cursor()
-
-        cursor.execute("SELECT user_id FROM users WHERE user_id = ?", (user_id,))
-        exists = cursor.fetchone()
-
-        if exists:
-            if username:
-                cursor.execute("""
-                    UPDATE users
-                    SET last_seen = CURRENT_TIMESTAMP,
-                        username = ?,
-                        first_name = COALESCE(?, first_name),
-                        last_name = COALESCE(?, last_name)
-                    WHERE user_id = ?
-                """, (username, first_name, last_name, user_id))
+        # SQLite только для локальной разработки
+        elif not USE_SUPABASE:
+            conn = self._get_connection()
+            cursor = conn.cursor()
+            cursor.execute("SELECT user_id FROM users WHERE user_id = ?", (user_id,))
+            exists = cursor.fetchone()
+            if exists:
+                if username:
+                    cursor.execute("""
+                        UPDATE users SET last_seen = CURRENT_TIMESTAMP, username = ? WHERE user_id = ?
+                    """, (username, user_id))
+                else:
+                    cursor.execute("UPDATE users SET last_seen = CURRENT_TIMESTAMP WHERE user_id = ?", (user_id,))
             else:
-                cursor.execute("""
-                    UPDATE users
-                    SET last_seen = CURRENT_TIMESTAMP
-                    WHERE user_id = ?
-                """, (user_id,))
-        else:
-            cursor.execute("""
-                INSERT INTO users (user_id, username, first_name, last_name)
-                VALUES (?, ?, ?, ?)
-            """, (user_id, username, first_name, last_name))
-
-            cursor.execute("""
-                INSERT INTO generation_limits (user_id, daily_count, last_reset, total_count)
-                VALUES (?, 0, CURRENT_DATE, 0)
-            """, (user_id,))
-
-        conn.commit()
-        conn.close()
+                cursor.execute("INSERT INTO users (user_id, username, first_name, last_name) VALUES (?, ?, ?, ?)",
+                              (user_id, username, first_name, last_name))
+                cursor.execute("INSERT INTO generation_limits (user_id, daily_count, last_reset, total_count) VALUES (?, 0, CURRENT_DATE, 0)", (user_id,))
+            conn.commit()
+            conn.close()
 
     def get_user_access_level(self, user_id: str) -> str:
-        """Получает уровень доступа пользователя"""
+        """Получает уровень доступа пользователя (сначала кэш)"""
+        # Проверяем кэш
+        if user_id in _user_cache:
+            return _user_cache[user_id].get("access_level", "user")
+        
+        # Если используем Supabase
         if USE_SUPABASE and supabase:
             try:
                 result = supabase.table("users").select("access_level").eq("user_id", user_id).execute()
                 if result.data:
-                    return result.data[0].get("access_level", "user")
+                    level = result.data[0].get("access_level", "user")
+                    # Кэшируем
+                    if user_id not in _user_cache:
+                        _user_cache[user_id] = {"user_id": user_id, "access_level": level}
+                    else:
+                        _user_cache[user_id]["access_level"] = level
+                    return level
             except Exception as e:
-                logger.error(f"❌ Ошибка Supabase в get_user_access_level: {e}")
+                logger.warning(f"⚠️ Ошибка Supabase: {e}")
+                return "user"  # Возвращаем дефолтный уровень
         
-        # SQLite версия
-        conn = self._get_connection()
-        cursor = conn.cursor()
-        cursor.execute("SELECT access_level FROM users WHERE user_id = ?", (user_id,))
-        row = cursor.fetchone()
-        conn.close()
-        return row["access_level"] if row else "user"
+        # SQLite только для локальной разработки
+        if not USE_SUPABASE:
+            conn = self._get_connection()
+            cursor = conn.cursor()
+            cursor.execute("SELECT access_level FROM users WHERE user_id = ?", (user_id,))
+            row = cursor.fetchone()
+            conn.close()
+            return row["access_level"] if row else "user"
+        
+        return "user"
 
     def set_user_access_level(self, user_id: str, level: str) -> bool:
         """Устанавливает уровень доступа пользователя"""
@@ -369,13 +393,20 @@ class BotDatabase:
         }
 
     def get_all_users_for_notification(self) -> List[str]:
-        """Получает список всех user_id для рассылки уведомлений"""
+        """Получает список всех user_id для рассылки уведомлений (с кэшем)"""
         if USE_SUPABASE and supabase:
             try:
                 result = supabase.table("users").select("user_id").execute()
-                return [row["user_id"] for row in result.data] if result.data else []
+                user_ids = [row["user_id"] for row in result.data] if result.data else []
+                # Кэшируем
+                for uid in user_ids:
+                    if uid not in _user_cache:
+                        _user_cache[uid] = {"user_id": uid}
+                return user_ids
             except Exception as e:
                 logger.error(f"❌ Ошибка Supabase в get_all_users_for_notification: {e}")
+                # Возвращаем из кэша
+                return list(_user_cache.keys())
         
         # SQLite версия
         conn = self._get_connection()
@@ -607,7 +638,7 @@ class BotDatabase:
         return users
 
     def is_admin(self, user_id: str) -> bool:
-        """Проверяет является ли пользователь администратором"""
+        """Проверяет является ли пользователь администратором (с кэшем)"""
         return self.get_user_access_level(user_id) == "admin"
 
     def remove_user(self, user_id: str) -> bool:

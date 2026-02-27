@@ -90,13 +90,18 @@ async def startup_event():
         from backend.database.users_db import get_database
         db = get_database()
         logger.info(f"✅ База данных инициализирована")
-        
+
         # Устанавливаем администратора из переменной окружения
         admin_user_id = os.environ.get("ADMIN_USER_ID")
         if admin_user_id:
-            db.add_or_update_user(admin_user_id, first_name="Admin")
-            db.set_user_access_level(admin_user_id, "admin")
-            logger.info(f"✅ Администратор установлен: {admin_user_id}")
+            # Добавляем админа только если база доступна
+            try:
+                db.add_or_update_user(admin_user_id, first_name="Admin")
+                db.set_user_access_level(admin_user_id, "admin")
+                logger.info(f"✅ Администратор установлен: {admin_user_id}")
+            except Exception as e:
+                logger.warning(f"⚠️ Не удалось установить админа: {e}")
+                logger.info("ℹ️ Админ будет добавлен при первом запросе")
         else:
             logger.warning("⚠️ ADMIN_USER_ID не установлен в .env")
 
