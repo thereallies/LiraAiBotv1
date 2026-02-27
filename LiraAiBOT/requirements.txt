@@ -38,6 +38,9 @@ Pillow
 # Telegram клиент
 telethon>=1.34.0
 
+# Supabase (база данных)
+supabase>=2.0.0
+
 # Дополнительные утилиты
 starlette
 typing-extensions

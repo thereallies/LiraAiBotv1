@@ -963,6 +963,9 @@ async def process_message(message: Dict[str, Any], bot_token: str):
                     # Получаем всех пользователей
                     all_users = db.get_all_users_for_notification()
 
+                    # Логируем список пользователей для отладки
+                    logger.info(f"📢 Рассылка: найдено {len(all_users)} пользователей: {all_users}")
+
                     # Отправляем сообщение о начале рассылки
                     await send_telegram_message(
                         chat_id,
@@ -972,6 +975,7 @@ async def process_message(message: Dict[str, Any], bot_token: str):
                     # Рассылаем сообщение всем пользователям
                     success_count = 0
                     fail_count = 0
+                    failed_users = []
 
                     for uid in all_users:
                         try:
@@ -990,12 +994,14 @@ async def process_message(message: Dict[str, Any], bot_token: str):
                         except Exception as e:
                             logger.error(f"❌ Ошибка отправки уведомления пользователю {uid}: {e}")
                             fail_count += 1
+                            failed_users.append(uid)
 
-                    # Отправляем отчет админу
-                    await send_telegram_message(
-                        chat_id,
-                        f"✅ Рассылка завершена!\n\n📊 Результат:\n• Успешно: {success_count}\n• Ошибок: {fail_count}\n• Всего: {len(all_users)}"
-                    )
+                    # Формируем отчет
+                    report = f"✅ Рассылка завершена!\n\n📊 Результат:\n• Успешно: {success_count}\n• Ошибок: {fail_count}\n• Всего: {len(all_users)}"
+                    if failed_users:
+                        report += f"\n\n❌ Не удалось отправить:\n" + "\n".join(failed_users[:10])
+
+                    await send_telegram_message(chat_id, report)
                     return
 
                 # Админ команда: stats
@@ -1189,7 +1195,7 @@ async def handle_feedback_bot_photo(chat_id: str, user_id: str, message: Dict[st
         
         logger.info(f"[FeedbackBot] ✅ Фото скачано: {downloaded_path}")
         
-        # Анализируем изображение через мультимодальную модель
+        # Ана��изируем изображение через мультимодальную модель
         logger.info(f"[FeedbackBot] 🔍 Начинаю анализ изображения через мультимодальную модель...")
         from backend.vision.image_analyzer import ImageAnalyzer
         analyzer = ImageAnalyzer(config)

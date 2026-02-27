@@ -1,7 +1,8 @@
 """
 Модуль для работы с базой данных пользователей.
-SQLite для хранения пользователей, лимитов генерации и уровней доступа.
+Поддерживает Supabase (PostgreSQL) и SQLite fallback.
 """
+import os
 import sqlite3
 import logging
 from datetime import datetime, timedelta
@@ -10,11 +11,33 @@ from pathlib import Path
 
 logger = logging.getLogger("bot.database")
 
-# Путь к базе данных
+# Путь к SQLite базе данных
 DB_PATH = Path(__file__).parent.parent.parent / "data" / "bot.db"
 
 # Создаем директорию если не существует
 DB_PATH.parent.mkdir(exist_ok=True, parents=True)
+
+# Проверяем использование Supabase
+USE_SUPABASE = os.getenv("USE_SUPABASE", "false").lower() == "true"
+SUPABASE_URL = os.getenv("SUPABASE_URL", "")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY", "")
+
+# Supabase клиент
+supabase = None
+if USE_SUPABASE and SUPABASE_URL and SUPABASE_KEY:
+    try:
+        from supabase import create_client, Client
+        supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+        logger.info("✅ Supabase клиент инициализирован")
+    except ImportError:
+        logger.warning("⚠️ supabase пакет не установлен. Установи: pip install supabase")
+        USE_SUPABASE = False
+    except Exception as e:
+        logger.error(f"❌ Ошибка инициализации Supabase: {e}")
+        USE_SUPABASE = False
+
+if not USE_SUPABASE:
+    logger.info("ℹ️ Используем SQLite базу данных")
 
 # Уровни доступа и квоты
 ACCESS_LEVELS = {
@@ -29,17 +52,20 @@ class BotDatabase:
 
     def __init__(self):
         self.db_path = DB_PATH
-        self._init_db()
-        logger.info(f"✅ База данных инициализирована: {self.db_path}")
+        if not USE_SUPABASE:
+            self._init_db()
+            logger.info(f"✅ База данных инициализирована: {self.db_path}")
+        else:
+            logger.info(f"✅ Supabase база данных инициализирована: {SUPABASE_URL}")
 
     def _get_connection(self):
-        """Получает соединение с БД"""
+        """Получает соединение с SQLite БД"""
         conn = sqlite3.connect(str(self.db_path))
         conn.row_factory = sqlite3.Row
         return conn
 
     def _init_db(self):
-        """Инициализирует базу данных"""
+        """Инициализирует SQLite базу данных"""
         conn = self._get_connection()
         cursor = conn.cursor()
 
@@ -87,7 +113,7 @@ class BotDatabase:
             )
         """)
 
-        # Таблица настроек бота (для тех.работ и других настроек)
+        # Таблица настроек бота
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS bot_settings (
                 key TEXT PRIMARY KEY,
@@ -106,21 +132,48 @@ class BotDatabase:
         conn.close()
         logger.info("✅ Таблицы базы данных созданы")
 
-    def add_or_update_user(self, user_id: str, username: str = None, 
+    def add_or_update_user(self, user_id: str, username: str = None,
                           first_name: str = None, last_name: str = None):
-        """Добавляет или обновляет пользователя (всегда обновляет username если есть)"""
+        """Добавляет или обновляет пользователя"""
+        if USE_SUPABASE and supabase:
+            try:
+                data = {
+                    "user_id": user_id,
+                    "username": username,
+                    "first_name": first_name,
+                    "last_name": last_name,
+                    "last_seen": datetime.now().isoformat()
+                }
+                
+                # upsert - вставить или обновить
+                supabase.table("users").upsert(data).execute()
+                
+                # Проверяем существует ли пользователь для инициализации лимитов
+                result = supabase.table("generation_limits").select("user_id").eq("user_id", user_id).execute()
+                if not result.data:
+                    supabase.table("generation_limits").insert({
+                        "user_id": user_id,
+                        "daily_count": 0,
+                        "total_count": 0
+                    }).execute()
+                    
+                return
+            except Exception as e:
+                logger.error(f"❌ Ошибка Supabase в add_or_update_user: {e}")
+                # Fallback на SQLite
+                logger.info("ℹ️ Fallback на SQLite")
+        
+        # SQLite версия
         conn = self._get_connection()
         cursor = conn.cursor()
 
-        # Проверяем существует ли пользователь
         cursor.execute("SELECT user_id FROM users WHERE user_id = ?", (user_id,))
         exists = cursor.fetchone()
 
         if exists:
-            # Обновляем last_seen и username (если передан)
             if username:
                 cursor.execute("""
-                    UPDATE users 
+                    UPDATE users
                     SET last_seen = CURRENT_TIMESTAMP,
                         username = ?,
                         first_name = COALESCE(?, first_name),
@@ -129,18 +182,16 @@ class BotDatabase:
                 """, (username, first_name, last_name, user_id))
             else:
                 cursor.execute("""
-                    UPDATE users 
+                    UPDATE users
                     SET last_seen = CURRENT_TIMESTAMP
                     WHERE user_id = ?
                 """, (user_id,))
         else:
-            # Добавляем нового пользователя
             cursor.execute("""
                 INSERT INTO users (user_id, username, first_name, last_name)
                 VALUES (?, ?, ?, ?)
             """, (user_id, username, first_name, last_name))
 
-            # Инициализируем лимиты
             cursor.execute("""
                 INSERT INTO generation_limits (user_id, daily_count, last_reset, total_count)
                 VALUES (?, 0, CURRENT_DATE, 0)
@@ -151,41 +202,83 @@ class BotDatabase:
 
     def get_user_access_level(self, user_id: str) -> str:
         """Получает уровень доступа пользователя"""
+        if USE_SUPABASE and supabase:
+            try:
+                result = supabase.table("users").select("access_level").eq("user_id", user_id).execute()
+                if result.data:
+                    return result.data[0].get("access_level", "user")
+            except Exception as e:
+                logger.error(f"❌ Ошибка Supabase в get_user_access_level: {e}")
+        
+        # SQLite версия
         conn = self._get_connection()
         cursor = conn.cursor()
-
         cursor.execute("SELECT access_level FROM users WHERE user_id = ?", (user_id,))
         row = cursor.fetchone()
         conn.close()
-
         return row["access_level"] if row else "user"
 
     def set_user_access_level(self, user_id: str, level: str) -> bool:
         """Устанавливает уровень доступа пользователя"""
         if level not in ACCESS_LEVELS:
             return False
-
+        
+        if USE_SUPABASE and supabase:
+            try:
+                supabase.table("users").update({"access_level": level}).eq("user_id", user_id).execute()
+                return True
+            except Exception as e:
+                logger.error(f"❌ Ошибка Supabase в set_user_access_level: {e}")
+                return False
+        
+        # SQLite версия
         conn = self._get_connection()
         cursor = conn.cursor()
-
-        cursor.execute("""
-            UPDATE users SET access_level = ? WHERE user_id = ?
-        """, (level, user_id))
-
+        cursor.execute("UPDATE users SET access_level = ? WHERE user_id = ?", (level, user_id))
         conn.commit()
         conn.close()
         return True
 
     def get_user_stats(self, user_id: str) -> Optional[Dict[str, Any]]:
-        """Получает статистику пользователя (всегда свежие данные)"""
+        """Получает статистику пользователя"""
+        if USE_SUPABASE and supabase:
+            try:
+                # Информация о пользователе
+                user_result = supabase.table("users").select("*").eq("user_id", user_id).execute()
+                if not user_result.data:
+                    return None
+                user_row = user_result.data[0]
+                
+                # Лимиты
+                limits_result = supabase.table("generation_limits").select("*").eq("user_id", user_id).execute()
+                limit_row = limits_result.data[0] if limits_result.data else None
+                
+                # Количество генераций за сегодня
+                today = datetime.now().date().isoformat()
+                history_result = supabase.table("generation_history").select("id", count="exact").eq("user_id", user_id).gte("created_at", today).execute()
+                
+                return {
+                    "user_id": user_row.get("user_id"),
+                    "username": user_row.get("username"),
+                    "first_name": user_row.get("first_name"),
+                    "last_name": user_row.get("last_name"),
+                    "access_level": user_row.get("access_level"),
+                    "created_at": user_row.get("created_at"),
+                    "last_seen": user_row.get("last_seen"),
+                    "daily_count": limit_row.get("daily_count", 0) if limit_row else 0,
+                    "total_count": limit_row.get("total_count", 0) if limit_row else 0,
+                    "today_generations": history_result.count
+                }
+            except Exception as e:
+                logger.error(f"❌ Ошибка Supabase в get_user_stats: {e}")
+        
+        # SQLite версия
         conn = self._get_connection()
         cursor = conn.cursor()
 
-        # Информация о пользователе - получаем свежие данные
         cursor.execute("""
             SELECT user_id, username, first_name, last_name, access_level, created_at, last_seen
-            FROM users 
-            WHERE user_id = ?
+            FROM users WHERE user_id = ?
         """, (user_id,))
         user_row = cursor.fetchone()
 
@@ -193,15 +286,12 @@ class BotDatabase:
             conn.close()
             return None
 
-        # Лимиты - получаем свежие данные с обновлением
         cursor.execute("""
             SELECT daily_count, last_reset, total_count
-            FROM generation_limits 
-            WHERE user_id = ?
+            FROM generation_limits WHERE user_id = ?
         """, (user_id,))
         limit_row = cursor.fetchone()
 
-        # Количество генераций за сегодня
         cursor.execute("""
             SELECT COUNT(*) as count
             FROM generation_history
@@ -223,101 +313,138 @@ class BotDatabase:
             "total_count": limit_row["total_count"] if limit_row else 0,
             "today_generations": today_count
         }
-    
+
     def set_maintenance_mode(self, enabled: bool, until_time: str = None):
-        """
-        Включает/выключает режим тех.работ.
+        """Включает/выключает режим тех.работ"""
+        data = {
+            "key": "maintenance_enabled",
+            "value": "1" if enabled else "0"
+        }
         
-        Args:
-            enabled: True - включить, False - выключить
-            until_time: Время окончания в формате "HH:MM"
-        """
+        if USE_SUPABASE and supabase:
+            try:
+                supabase.table("bot_settings").upsert(data).execute()
+                if until_time:
+                    supabase.table("bot_settings").upsert({"key": "maintenance_until", "value": until_time}).execute()
+                return
+            except Exception as e:
+                logger.error(f"❌ Ошибка Supabase в set_maintenance_mode: {e}")
+        
+        # SQLite версия
         conn = self._get_connection()
         cursor = conn.cursor()
-        
-        # Создаём таблицу для настроек если нет
         cursor.execute("""
-            CREATE TABLE IF NOT EXISTS bot_settings (
-                key TEXT PRIMARY KEY,
-                value TEXT
-            )
-        """)
-        
-        # Сохраняем настройки
-        cursor.execute("""
-            INSERT OR REPLACE INTO bot_settings (key, value)
-            VALUES ('maintenance_enabled', ?)
+            INSERT OR REPLACE INTO bot_settings (key, value) VALUES ('maintenance_enabled', ?)
         """, ("1" if enabled else "0",))
-        
         if until_time:
             cursor.execute("""
-                INSERT OR REPLACE INTO bot_settings (key, value)
-                VALUES ('maintenance_until', ?)
+                INSERT OR REPLACE INTO bot_settings (key, value) VALUES ('maintenance_until', ?)
             """, (until_time,))
-        
         conn.commit()
         conn.close()
-    
+
     def get_maintenance_mode(self) -> Dict[str, Any]:
-        """
-        Получает статус режима тех.работ.
+        """Получает статус режима тех.работ"""
+        if USE_SUPABASE and supabase:
+            try:
+                result = supabase.table("bot_settings").select("key, value").in_("key", ["maintenance_enabled", "maintenance_until"]).execute()
+                settings = {row["key"]: row["value"] for row in result.data} if result.data else {}
+                return {
+                    "enabled": settings.get("maintenance_enabled", "0") == "1",
+                    "until_time": settings.get("maintenance_until", None)
+                }
+            except Exception as e:
+                logger.error(f"❌ Ошибка Supabase в get_maintenance_mode: {e}")
         
-        Returns:
-            {
-                "enabled": bool,
-                "until_time": str or None
-            }
-        """
+        # SQLite версия
         conn = self._get_connection()
         cursor = conn.cursor()
-        
-        try:
-            cursor.execute("SELECT key, value FROM bot_settings WHERE key IN ('maintenance_enabled', 'maintenance_until')")
-            rows = cursor.fetchall()
-            
-            settings = {row["key"]: row["value"] for row in rows}
-            
-            return {
-                "enabled": settings.get("maintenance_enabled", "0") == "1",
-                "until_time": settings.get("maintenance_until", None)
-            }
-        finally:
-            conn.close()
-    
+        cursor.execute("SELECT key, value FROM bot_settings WHERE key IN ('maintenance_enabled', 'maintenance_until')")
+        rows = cursor.fetchall()
+        settings = {row["key"]: row["value"] for row in rows}
+        conn.close()
+        return {
+            "enabled": settings.get("maintenance_enabled", "0") == "1",
+            "until_time": settings.get("maintenance_until", None)
+        }
+
     def get_all_users_for_notification(self) -> List[str]:
-        """
-        Получает список всех user_id для рассылки уведомлений.
+        """Получает список всех user_id для рассылки уведомлений"""
+        if USE_SUPABASE and supabase:
+            try:
+                result = supabase.table("users").select("user_id").execute()
+                return [row["user_id"] for row in result.data] if result.data else []
+            except Exception as e:
+                logger.error(f"❌ Ошибка Supabase в get_all_users_for_notification: {e}")
         
-        Returns:
-            Список user_id
-        """
+        # SQLite версия
         conn = self._get_connection()
         cursor = conn.cursor()
-        
         cursor.execute("SELECT user_id FROM users")
         user_ids = [row["user_id"] for row in cursor.fetchall()]
-        
         conn.close()
         return user_ids
 
     def check_generation_limit(self, user_id: str) -> Dict[str, Any]:
-        """
-        Проверяет лимит генерации для пользователя
+        """Проверяет лимит генерации для пользователя"""
+        if USE_SUPABASE and supabase:
+            try:
+                # Получаем уровень доступа и лимиты
+                user_result = supabase.table("users").select("access_level").eq("user_id", user_id).execute()
+                if not user_result.data:
+                    self.add_or_update_user(user_id)
+                    return {
+                        "allowed": True,
+                        "daily_count": 0,
+                        "daily_limit": 3,
+                        "total_count": 0,
+                        "reset_time": "сегодня",
+                        "access_level": "user"
+                    }
+                
+                access_level = user_result.data[0].get("access_level", "user")
+                
+                limits_result = supabase.table("generation_limits").select("*").eq("user_id", user_id).execute()
+                if not limits_result.data:
+                    return {
+                        "allowed": True,
+                        "daily_count": 0,
+                        "daily_limit": ACCESS_LEVELS.get(access_level, {}).get("daily_limit", 3),
+                        "total_count": 0,
+                        "reset_time": "сегодня",
+                        "access_level": access_level
+                    }
+                
+                limit_row = limits_result.data[0]
+                daily_count = limit_row.get("daily_count", 0)
+                daily_limit = ACCESS_LEVELS.get(access_level, {}).get("daily_limit", 3)
+                
+                # Проверяем нужно ли сбросить счетчик
+                today = datetime.now().date()
+                last_reset_str = limit_row.get("last_reset", str(today))
+                last_reset_date = datetime.strptime(last_reset_str, "%Y-%m-%d").date() if last_reset_str else today
+                
+                if last_reset_date < today:
+                    self._reset_daily_limit(user_id)
+                    daily_count = 0
+                
+                allowed = daily_limit == -1 or daily_count < daily_limit
+                
+                return {
+                    "allowed": allowed,
+                    "daily_count": daily_count,
+                    "daily_limit": daily_limit,
+                    "total_count": limit_row.get("total_count", 0),
+                    "reset_time": "сегодня в 00:00",
+                    "access_level": access_level
+                }
+            except Exception as e:
+                logger.error(f"❌ Ошибка Supabase в check_generation_limit: {e}")
         
-        Returns:
-            {
-                "allowed": bool,
-                "daily_count": int,
-                "daily_limit": int,
-                "total_count": int,
-                "reset_time": str,
-                "access_level": str
-            }
-        """
+        # SQLite версия
         conn = self._get_connection()
         cursor = conn.cursor()
 
-        # Получаем уровень доступа и лимиты
         cursor.execute("""
             SELECT u.access_level, g.daily_count, g.last_reset, g.total_count
             FROM users u
@@ -329,7 +456,6 @@ class BotDatabase:
         conn.close()
 
         if not row:
-            # Пользователь не найден, создаем запись
             self.add_or_update_user(user_id)
             return {
                 "allowed": True,
@@ -344,55 +470,74 @@ class BotDatabase:
         daily_count = row["daily_count"]
         last_reset = row["last_reset"]
         total_count = row["total_count"]
-
-        # Получаем лимит для уровня доступа
         daily_limit = ACCESS_LEVELS.get(access_level, {}).get("daily_limit", 3)
 
-        # Проверяем нужно ли сбросить счетчик (новый день)
         today = datetime.now().date()
         last_reset_date = datetime.strptime(last_reset, "%Y-%m-%d").date() if last_reset else today
 
         if last_reset_date < today:
-            # Новый день - сбрасываем счетчик
             self._reset_daily_limit(user_id)
             daily_count = 0
-            last_reset = str(today)
 
-        # -1 означает безлимит
         allowed = daily_limit == -1 or daily_count < daily_limit
-
-        # Время сброса (полночь)
-        reset_time = "сегодня в 00:00"
 
         return {
             "allowed": allowed,
             "daily_count": daily_count,
             "daily_limit": daily_limit,
             "total_count": total_count,
-            "reset_time": reset_time,
+            "reset_time": "сегодня в 00:00",
             "access_level": access_level
         }
 
     def _reset_daily_limit(self, user_id: str):
         """Сбрасывает дневной счетчик"""
+        if USE_SUPABASE and supabase:
+            try:
+                supabase.table("generation_limits").update({
+                    "daily_count": 0,
+                    "last_reset": datetime.now().date().isoformat()
+                }).eq("user_id", user_id).execute()
+                return
+            except Exception as e:
+                logger.error(f"❌ Ошибка Supabase в _reset_daily_limit: {e}")
+        
+        # SQLite версия
         conn = self._get_connection()
         cursor = conn.cursor()
-
         cursor.execute("""
             UPDATE generation_limits
             SET daily_count = 0, last_reset = CURRENT_DATE
             WHERE user_id = ?
         """, (user_id,))
-
         conn.commit()
         conn.close()
 
     def increment_generation_count(self, user_id: str, prompt: str = None):
         """Увеличивает счетчик генераций"""
+        if USE_SUPABASE and supabase:
+            try:
+                # Увеличиваем счетчики
+                supabase.table("generation_limits").update("""
+                    daily_count = daily_count + 1,
+                    total_count = total_count + 1,
+                    last_reset = CURRENT_DATE
+                """).eq("user_id", user_id).execute()
+                
+                # Добавляем запись в историю
+                if prompt:
+                    supabase.table("generation_history").insert({
+                        "user_id": user_id,
+                        "prompt": prompt
+                    }).execute()
+                return
+            except Exception as e:
+                logger.error(f"❌ Ошибка Supabase в increment_generation_count: {e}")
+        
+        # SQLite версия
         conn = self._get_connection()
         cursor = conn.cursor()
 
-        # Увеличиваем счетчики
         cursor.execute("""
             UPDATE generation_limits
             SET daily_count = daily_count + 1,
@@ -401,7 +546,6 @@ class BotDatabase:
             WHERE user_id = ?
         """, (user_id,))
 
-        # Добавляем запись в историю
         if prompt:
             cursor.execute("""
                 INSERT INTO generation_history (user_id, prompt)
@@ -413,27 +557,51 @@ class BotDatabase:
 
     def get_all_users_count(self) -> int:
         """Получает общее количество пользователей"""
+        if USE_SUPABASE and supabase:
+            try:
+                result = supabase.table("users").select("user_id", count="exact").execute()
+                return result.count
+            except Exception as e:
+                logger.error(f"❌ Ошибка Supabase в get_all_users_count: {e}")
+        
+        # SQLite версия
         conn = self._get_connection()
         cursor = conn.cursor()
-
         cursor.execute("SELECT COUNT(*) as count FROM users")
         count = cursor.fetchone()["count"]
-
         conn.close()
         return count
 
     def get_all_users(self) -> list:
         """Получает всех пользователей"""
+        if USE_SUPABASE and supabase:
+            try:
+                user_result = supabase.table("users").select("*").execute()
+                users = user_result.data if user_result.data else []
+                
+                # Добавляем лимиты
+                limits_result = supabase.table("generation_limits").select("*").execute()
+                limits_map = {row["user_id"]: row for row in limits_result.data} if limits_result.data else {}
+                
+                for user in users:
+                    limit = limits_map.get(user["user_id"], {})
+                    user["daily_count"] = limit.get("daily_count", 0)
+                    user["total_count"] = limit.get("total_count", 0)
+                    user["last_reset"] = limit.get("last_reset", "")
+                
+                return users
+            except Exception as e:
+                logger.error(f"❌ Ошибка Supabase в get_all_users: {e}")
+        
+        # SQLite версия
         conn = self._get_connection()
         cursor = conn.cursor()
-
         cursor.execute("""
             SELECT u.*, g.daily_count, g.total_count, g.last_reset
             FROM users u
             JOIN generation_limits g ON u.user_id = g.user_id
             ORDER BY u.created_at DESC
         """)
-
         users = [dict(row) for row in cursor.fetchall()]
         conn.close()
         return users
@@ -444,19 +612,27 @@ class BotDatabase:
 
     def remove_user(self, user_id: str) -> bool:
         """Удаляет пользователя из базы данных"""
+        if USE_SUPABASE and supabase:
+            try:
+                # Удаляем из generation_limits
+                supabase.table("generation_limits").delete().eq("user_id", user_id).execute()
+                # Удаляем из generation_history
+                supabase.table("generation_history").delete().eq("user_id", user_id).execute()
+                # Удаляем из users
+                supabase.table("users").delete().eq("user_id", user_id).execute()
+                return True
+            except Exception as e:
+                logger.error(f"❌ Ошибка Supabase в remove_user: {e}")
+                return False
+        
+        # SQLite версия
         conn = self._get_connection()
         cursor = conn.cursor()
 
         try:
-            # Удаляем из generation_limits
             cursor.execute("DELETE FROM generation_limits WHERE user_id = ?", (user_id,))
-            
-            # Удаляем из generation_history
             cursor.execute("DELETE FROM generation_history WHERE user_id = ?", (user_id,))
-            
-            # Удаляем из users
             cursor.execute("DELETE FROM users WHERE user_id = ?", (user_id,))
-            
             conn.commit()
             return True
         except Exception as e:
