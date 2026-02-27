@@ -5,11 +5,20 @@ import asyncio
 import logging
 import sys
 import os
+import subprocess
 from pathlib import Path
 from dotenv import load_dotenv
 
 # Загружаем переменные окружения
 load_dotenv()
+
+# Устанавливаем supabase если не установлен (для bothost.ru)
+try:
+    import supabase
+except ImportError:
+    print("⚠️ Устанавливаю supabase...")
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "supabase", "-q"])
+    print("✅ supabase установлен!")
 
 # Добавляем путь к корню проекта в sys.path для правильных импортов
 project_root = Path(__file__).parent.parent
