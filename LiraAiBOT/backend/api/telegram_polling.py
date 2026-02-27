@@ -675,7 +675,10 @@ async def process_message(message: Dict[str, Any], bot_token: str):
                     from backend.database.users_db import get_database
                     db = get_database()
 
-                    if not db.is_admin(user_id):
+                    is_admin_user = db.is_admin(user_id)
+                    logger.info(f"🔐 Проверка админа {user_id}: {is_admin_user}")
+                    
+                    if not is_admin_user:
                         await send_telegram_message(chat_id, "❌ У вас нет прав администратора")
                         return
 
@@ -1190,7 +1193,7 @@ async def handle_feedback_bot_photo(chat_id: str, user_id: str, message: Dict[st
         
         if not downloaded_path:
             logger.error(f"[FeedbackBot] ❌ Не удалось скачать фото: {file_id}")
-            await send_telegram_message(chat_id, "❌ Не удалось скачать фото для анализа.")
+            await send_telegram_message(chat_id, "❌ Не удалось скачать фот�� для анализа.")
             return
         
         logger.info(f"[FeedbackBot] ✅ Фото скачано: {downloaded_path}")

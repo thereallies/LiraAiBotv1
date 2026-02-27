@@ -639,7 +639,13 @@ class BotDatabase:
 
     def is_admin(self, user_id: str) -> bool:
         """Проверяет является ли пользователь администратором (с кэшем)"""
-        return self.get_user_access_level(user_id) == "admin"
+        # Проверяем кэш сначала
+        if user_id in _user_cache:
+            return _user_cache[user_id].get("access_level", "user") == "admin"
+        
+        # Если нет в кэше - проверяем через Supabase
+        level = self.get_user_access_level(user_id)
+        return level == "admin"
 
     def remove_user(self, user_id: str) -> bool:
         """Удаляет пользователя из базы данных"""
