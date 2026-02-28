@@ -20,6 +20,14 @@ except ImportError:
     subprocess.check_call([sys.executable, "-m", "pip", "install", "supabase", "-q"])
     print("✅ supabase установлен!")
 
+# Устанавливаем google-genai если не установлен (для Gemini Image Generation)
+try:
+    from google import genai
+except ImportError:
+    print("⚠️ Устанавливаю google-genai...")
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "google-genai>=1.0.0", "-q"])
+    print("✅ google-genai установлен!")
+
 # Добавляем путь к корню проекта в sys.path для правильных импортов
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
