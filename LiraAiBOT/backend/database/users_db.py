@@ -716,6 +716,479 @@ class BotDatabase:
         level = self.get_user_access_level(user_id)
         return level == "admin"
 
+    # =========================================
+    # Долговременная память (диалоги)
+    # =========================================
+
+    def save_dialog_message(
+        self,
+        user_id: str,
+        role: str,
+        content: str,
+        model: str = None,
+        tokens_count: int = 0
+    ):
+        """
+        Сохраняет сообщение в историю диалога (асинхронно, не блокирует)
+        
+        Args:
+            user_id: ID пользователя
+            role: 'user', 'assistant', или 'system'
+            content: Текст сообщения
+            model: Название модели
+            tokens_count: Количество токенов
+        """
+        if USE_SUPABASE and supabase:
+            try:
+                data = {
+                    "user_id": user_id,
+                    "role": role,
+                    "content": content,
+                    "model": model,
+                    "tokens_count": tokens_count
+                }
+                
+                # Вставляем в фоне (не ждём ответа)
+                supabase.table("dialog_history").insert(data).execute()
+            except Exception as e:
+                logger.warning(f"⚠️ Не удалось сохранить сообщение в историю: {e}")
+        else:
+            # SQLite fallback
+            try:
+                conn = self._get_connection()
+                cursor = conn.cursor()
+                cursor.execute("""
+                    INSERT INTO dialog_history (user_id, role, content, model, tokens_count)
+                    VALUES (?, ?, ?, ?, ?)
+                """, (user_id, role, content, model, tokens_count))
+                conn.commit()
+                conn.close()
+            except sqlite3.OperationalError:
+                # Таблицы нет - игнорируем
+                pass
+
+    def get_dialog_history(
+        self,
+        user_id: str,
+        limit: int = 20,
+        before_date: str = None
+    ) -> List[Dict[str, Any]]:
+        """
+        Получает историю диалога пользователя
+        
+        Args:
+            user_id: ID пользователя
+            limit: Максимальное количество сообщений (по умолчанию 20)
+            before_date: Получить сообщения до указанной даты (ISO format)
+        
+        Returns:
+            Список сообщений в формате [{"role": "...", "content": "..."}, ...]
+        """
+        if USE_SUPABASE and supabase:
+            try:
+                query = supabase.table("dialog_history").select(
+                    "role, content, model, created_at"
+                ).eq("user_id", user_id)
+                
+                if before_date:
+                    query = query.lt("created_at", before_date)
+                
+                query = query.order("created_at", desc=True).limit(limit)
+                result = query.execute()
+                
+                # Возвращаем в правильном порядке (от старых к новым)
+                messages = result.data if result.data else []
+                return list(reversed(messages))
+            except Exception as e:
+                logger.warning(f"⚠️ Не удалось получить историю диалога: {e}")
+                return []
+        else:
+            # SQLite fallback
+            try:
+                conn = self._get_connection()
+                cursor = conn.cursor()
+                
+                if before_date:
+                    cursor.execute("""
+                        SELECT role, content, model, created_at
+                        FROM dialog_history
+                        WHERE user_id = ? AND created_at < ?
+                        ORDER BY created_at DESC
+                        LIMIT ?
+                    """, (user_id, before_date, limit))
+                else:
+                    cursor.execute("""
+                        SELECT role, content, model, created_at
+                        FROM dialog_history
+                        WHERE user_id = ?
+                        ORDER BY created_at DESC
+                        LIMIT ?
+                    """, (user_id, limit))
+                
+                rows = cursor.fetchall()
+                conn.close()
+                
+                return [
+                    {"role": row[0], "content": row[1], "model": row[2], "created_at": row[3]}
+                    for row in rows
+                ][::-1]  # Reverse to get oldest first
+            except sqlite3.OperationalError:
+                return []
+
+    def clear_dialog_history(self, user_id: str) -> bool:
+        """
+        Очищает всю историю диалога пользователя
+        
+        Args:
+            user_id: ID пользователя
+        
+        Returns:
+            True если успешно
+        """
+        if USE_SUPABASE and supabase:
+            try:
+                supabase.table("dialog_history").delete().eq("user_id", user_id).execute()
+                return True
+            except Exception as e:
+                logger.error(f"❌ Ошибка очистки истории: {e}")
+                return False
+        else:
+            # SQLite fallback
+            try:
+                conn = self._get_connection()
+                cursor = conn.cursor()
+                cursor.execute("DELETE FROM dialog_history WHERE user_id = ?", (user_id,))
+                conn.commit()
+                conn.close()
+                return True
+            except sqlite3.OperationalError:
+                return False
+
+    def get_user_dialog_stats(self, user_id: str) -> Dict[str, Any]:
+        """
+        Получает статистику по истории диалога пользователя
+        """
+        if USE_SUPABASE and supabase:
+            try:
+                # Загружаем все сообщения и считаем
+                all_messages = supabase.table("dialog_history").select(
+                    "role, created_at, feedback_score"
+                ).eq("user_id", user_id).execute()
+                
+                messages = all_messages.data if all_messages.data else []
+                
+                # Считаем статистику
+                total = len(messages)
+                user_msgs = sum(1 for m in messages if m.get("role") == "user")
+                assistant_msgs = sum(1 for m in messages if m.get("role") == "assistant")
+                positive = sum(1 for m in messages if m.get("feedback_score") == 1)
+                negative = sum(1 for m in messages if m.get("feedback_score") == -1)
+                
+                # Первое и последнее
+                first_msg = messages[0]["created_at"] if messages else None
+                last_msg = messages[-1]["created_at"] if messages else None
+                
+                return {
+                    "total_messages": total,
+                    "user_messages": user_msgs,
+                    "assistant_messages": assistant_msgs,
+                    "first_message": first_msg,
+                    "last_message": last_msg,
+                    "positive_feedback": positive,
+                    "negative_feedback": negative
+                }
+            except Exception as e:
+                logger.warning(f"⚠️ Не удалось получить статистику диалога: {e}")
+                return {}
+        else:
+            # SQLite fallback
+            try:
+                conn = self._get_connection()
+                cursor = conn.cursor()
+                
+                cursor.execute("""
+                    SELECT 
+                        COUNT(*) as total,
+                        COUNT(*) FILTER (WHERE role = 'user') as user_msgs,
+                        COUNT(*) FILTER (WHERE role = 'assistant') as assistant_msgs,
+                        MIN(created_at) as first_msg,
+                        MAX(created_at) as last_msg,
+                        COUNT(*) FILTER (WHERE feedback_score = 1) as positive,
+                        COUNT(*) FILTER (WHERE feedback_score = -1) as negative
+                    FROM dialog_history
+                    WHERE user_id = ?
+                """, (user_id,))
+                
+                row = cursor.fetchone()
+                conn.close()
+                
+                if row:
+                    return {
+                        "total_messages": row[0] or 0,
+                        "user_messages": row[1] or 0,
+                        "assistant_messages": row[2] or 0,
+                        "first_message": row[3],
+                        "last_message": row[4],
+                        "positive_feedback": row[5] or 0,
+                        "negative_feedback": row[6] or 0
+                    }
+                return {}
+            except sqlite3.OperationalError:
+                return {}
+
+    def get_admin_dialog_history(
+        self,
+        user_id: str,
+        limit: int = 50
+    ) -> List[Dict[str, Any]]:
+        """
+        Получает историю диалога для админа (с подробной информацией)
+        
+        Args:
+            user_id: ID пользователя
+            limit: Максимальное количество сообщений
+        
+        Returns:
+            Список сообщений с полной информацией
+        """
+        if USE_SUPABASE and supabase:
+            try:
+                result = supabase.table("dialog_history").select(
+                    "id, role, content, model, created_at, tokens_count, feedback_score"
+                ).eq("user_id", user_id).order(
+                    "created_at", desc=True
+                ).limit(limit).execute()
+                
+                messages = result.data if result.data else []
+                return list(reversed(messages))
+            except Exception as e:
+                logger.error(f"❌ Ошибка получения истории для админа: {e}")
+                return []
+        else:
+            # SQLite fallback
+            try:
+                conn = self._get_connection()
+                cursor = conn.cursor()
+                cursor.execute("""
+                    SELECT id, role, content, model, created_at, tokens_count, feedback_score
+                    FROM dialog_history
+                    WHERE user_id = ?
+                    ORDER BY created_at DESC
+                    LIMIT ?
+                """, (user_id, limit))
+                
+                rows = cursor.fetchall()
+                conn.close()
+                
+                return [
+                    {
+                        "id": row[0],
+                        "role": row[1],
+                        "content": row[2],
+                        "model": row[3],
+                        "created_at": row[4],
+                        "tokens_count": row[5],
+                        "feedback_score": row[6]
+                    }
+                    for row in rows
+                ][::-1]
+            except sqlite3.OperationalError:
+                return []
+
+    def cleanup_old_dialogs(self, days_to_keep: int = 30) -> int:
+        """
+        Удаляет старые сообщения из истории
+        
+        Args:
+            days_to_keep: Хранить сообщения за последние N дней
+        
+        Returns:
+            Количество удалённых сообщений
+        """
+        if USE_SUPABASE and supabase:
+            try:
+                # Supabase не поддерживает хранимые процедуры напрямую
+                # Удаляем через фильтр
+                from datetime import datetime, timedelta
+                
+                cutoff_date = datetime.now() - timedelta(days=days_to_keep)
+                
+                # Получаем ID сообщений для удаления
+                old_messages = supabase.table("dialog_history").select("id").lt(
+                    "created_at", cutoff_date.isoformat()
+                ).execute()
+                
+                deleted_count = len(old_messages.data) if old_messages.data else 0
+                
+                if deleted_count > 0:
+                    supabase.table("dialog_history").delete().lt(
+                        "created_at", cutoff_date.isoformat()
+                    ).execute()
+                
+                logger.info(f"🗑️ Удалено {deleted_count} старых сообщений")
+                return deleted_count
+            except Exception as e:
+                logger.error(f"❌ Ошибка очистки старых сообщений: {e}")
+                return 0
+        else:
+            # SQLite fallback
+            try:
+                conn = self._get_connection()
+                cursor = conn.cursor()
+                
+                cursor.execute("""
+                    DELETE FROM dialog_history
+                    WHERE created_at < datetime('now', ?)
+                """, (f'-{days_to_keep} days',))
+                
+                deleted_count = cursor.rowcount
+                conn.commit()
+                conn.close()
+                
+                logger.info(f"🗑️ Удалено {deleted_count} старых сообщений")
+                return deleted_count
+            except sqlite3.OperationalError:
+                return 0
+
+    def set_message_feedback(
+        self,
+        message_id: int,
+        user_id: str,
+        score: int
+    ) -> bool:
+        """
+        Устанавливает оценку сообщению (👍/👎)
+        
+        Args:
+            message_id: ID сообщения в dialog_history
+            user_id: ID пользователя
+            score: 1 (👍) или -1 (👎)
+        
+        Returns:
+            True если успешно
+        """
+        if USE_SUPABASE and supabase:
+            try:
+                # Обновляем оценку в dialog_history
+                supabase.table("dialog_history").update({
+                    "feedback_score": score
+                }).eq("id", message_id).eq("user_id", user_id).execute()
+                
+                # Также сохраняем в таблицу feedback для статистики
+                supabase.table("feedback").insert({
+                    "user_id": user_id,
+                    "message_id": message_id,
+                    "score": score
+                }).execute()
+                
+                return True
+            except Exception as e:
+                logger.error(f"❌ Ошибка установки оценки: {e}")
+                return False
+        else:
+            # SQLite fallback
+            try:
+                conn = self._get_connection()
+                cursor = conn.cursor()
+                
+                cursor.execute("""
+                    UPDATE dialog_history
+                    SET feedback_score = ?
+                    WHERE id = ? AND user_id = ?
+                """, (score, message_id, user_id))
+                
+                conn.commit()
+                conn.close()
+                return True
+            except sqlite3.OperationalError:
+                return False
+
+    # =========================================
+    # Настройки пользователя (выбор модели)
+    # =========================================
+
+    def get_user_model(self, user_id: str) -> str:
+        """
+        Получает выбранную модель пользователя из БД
+        """
+        if USE_SUPABASE and supabase:
+            try:
+                result = supabase.table("user_settings").select("selected_model").eq("user_id", user_id).execute()
+                
+                if result.data and len(result.data) > 0:
+                    model = result.data[0].get("selected_model", "groq-llama")
+                    logger.info(f"💾 Загружена модель из БД для {user_id}: {model}")
+                    return model
+                
+                logger.info(f"💾 Нет настроек для {user_id}, используем groq-llama")
+                return "groq-llama"
+            except Exception as e:
+                logger.warning(f"⚠️ Ошибка загрузки модели: {e}")
+                return "groq-llama"
+        else:
+            try:
+                conn = self._get_connection()
+                cursor = conn.cursor()
+                cursor.execute("SELECT selected_model FROM user_settings WHERE user_id = ?", (user_id,))
+                row = cursor.fetchone()
+                conn.close()
+                if row:
+                    return row[0]
+                return "groq-llama"
+            except sqlite3.OperationalError:
+                return "groq-llama"
+
+    def set_user_model(self, user_id: str, model_key: str) -> bool:
+        """
+        Сохраняет выбранную модель пользователя в БД
+        """
+        if USE_SUPABASE and supabase:
+            try:
+                result = supabase.table("user_settings").select("user_id").eq("user_id", user_id).execute()
+                
+                if result.data and len(result.data) > 0:
+                    supabase.table("user_settings").update({
+                        "selected_model": model_key,
+                        "updated_at": datetime.now().isoformat()
+                    }).eq("user_id", user_id).execute()
+                else:
+                    supabase.table("user_settings").insert({
+                        "user_id": user_id,
+                        "selected_model": model_key
+                    }).execute()
+                
+                logger.info(f"💾 Сохранена модель для {user_id}: {model_key}")
+                return True
+            except Exception as e:
+                logger.error(f"❌ Ошибка сохранения модели: {e}")
+                return False
+        else:
+            try:
+                conn = self._get_connection()
+                cursor = conn.cursor()
+                
+                cursor.execute("SELECT user_id FROM user_settings WHERE user_id = ?", (user_id,))
+                exists = cursor.fetchone()
+                
+                if exists:
+                    cursor.execute("""
+                        UPDATE user_settings
+                        SET selected_model = ?, updated_at = CURRENT_TIMESTAMP
+                        WHERE user_id = ?
+                    """, (model_key, user_id))
+                else:
+                    cursor.execute("""
+                        INSERT INTO user_settings (user_id, selected_model)
+                        VALUES (?, ?)
+                    """, (user_id, model_key))
+                
+                conn.commit()
+                conn.close()
+                logger.info(f"💾 Сохранена модель для {user_id}: {model_key}")
+                return True
+            except sqlite3.OperationalError:
+                return False
+
     def remove_user(self, user_id: str) -> bool:
         """Удаляет пользователя из базы данных"""
         if USE_SUPABASE and supabase:

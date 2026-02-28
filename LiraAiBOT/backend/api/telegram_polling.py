@@ -85,8 +85,7 @@ user_selecting_model: Dict[str, bool] = {}
 # Глобальная переменная для режима тех.работ
 maintenance_mode = {"enabled": False, "until_time": None}
 
-# Хранилище истории диалогов для пользователей (последние 10 сообщений)
-user_dialog_history: Dict[str, List[Dict[str, str]]] = {}
+# Хранилище истории диалогов удалено - теперь используется база данных
 
 # Доступные модели для выбора
 AVAILABLE_MODELS = {
@@ -97,8 +96,7 @@ AVAILABLE_MODELS = {
     "groq-kimi": ("groq", "moonshotai/kimi-k2-instruct"),  # Groq Kimi K2
     # Cerebras модели
     "cerebras-llama": ("cerebras", "llama3.1-8b"),  # Cerebras Llama 3.1 8B
-    "cerebras-qwen": ("cerebras", "qwen-3-235b-a22b-instruct-2507"),  # Cerebras Qwen 3 235B
-    # OpenRouter модели
+    # OpenRouter модели (fallback)
     "solar": ("openrouter", "upstage/solar-pro-3:free"),  # OpenRouter Solar Pro 3
     "trinity": ("openrouter", "arcee-ai/trinity-mini:free"),  # OpenRouter Trinity Mini
     "glm": ("openrouter", "z-ai/glm-4.5-air:free"),  # OpenRouter GLM-4.5
@@ -114,26 +112,12 @@ async def show_start_menu(chat_id: str):
 
     buttons = [
         [
-            {"text": "🚀 Groq Llama 3.3", "callback_data": "model_groq-llama"},
-            {"text": "🦙 Groq Llama 4", "callback_data": "model_groq-maverick"},
-        ],
-        [
-            {"text": "🔍 Groq Scout", "callback_data": "model_groq-scout"},
-            {"text": "🌙 Groq Kimi K2", "callback_data": "model_groq-kimi"},
-        ],
-        [
-            {"text": "⚡ Cerebras Llama 3.1", "callback_data": "model_cerebras-llama"},
-            {"text": "🧠 Cerebras Qwen 3", "callback_data": "model_cerebras-qwen"},
-        ],
-        [
-            {"text": "☀️ Solar", "callback_data": "model_solar"},
-            {"text": "🔱 Trinity", "callback_data": "model_trinity"},
-        ],
-        [
-            {"text": "🤖 GLM-4.5", "callback_data": "model_glm"},
-        ],
-        [
+            {"text": "🤖 Выбрать модель", "callback_data": "menu_models"},
             {"text": "🎨 Генерировать фото", "callback_data": "gen_photo"},
+        ],
+        [
+            {"text": "📸 Фото", "callback_data": "menu_photo"},
+            {"text": "🎤 Голос", "callback_data": "menu_voice"},
         ],
         [
             {"text": "📊 Статистика", "callback_data": "stats"},
@@ -144,38 +128,46 @@ async def show_start_menu(chat_id: str):
         ]
     ]
 
-    welcome_text = """👋 **Привет! Я LiraAI MultiAssistant**
+    welcome_text = """👋 **Привет! Я LiraAI** 🤖
 
-Я умею:
+Я твой персональный AI-ассистент женского пола!
+
+**Что я умею:**
 • 💬 Общаться на русском языке
 • 🎨 Генерировать изображения по описанию
 • 🎤 Распознавать голосовые сообщения
 • 📸 Анализировать фотографии
 
-🆓 Все модели БЕСПЛАТНЫЕ!
+🆓 **Все модели БЕСПЛАТНЫЕ!**
 
-⚡ **Быстрые модели:**
-• Groq Llama 3.3 70B - лучшая для русского
-• Groq Llama 4 Maverick - новейшая от Meta
-• Groq Scout - легкая и быстрая
-• Groq Kimi K2 - от Moonshot AI
-• Cerebras Llama 3.1 - сверхбыстрая
-• Cerebras Qwen 3 235B - мощная
+⚡ **Groq (очень быстрые):**
+• Llama 3.3 70B - лучшая для русского
+• Llama 4 Maverick - новейшая от Meta
+• Llama 4 Scout - легкая и быстрая
+• Kimi K2 - от Moonshot AI
 
-☁️ **OpenRouter модели:**
-• Solar Pro 3 - быстрая, качественная
+🚀 **Cerebras (сверхбыстрые):**
+• Llama 3.1 8B - молниеносная
+• GPT-oss 120B - большая открытая модель
+• Qwen 3 235B - мощная китайская модель
+• GLM-4.7 - продвинутая азиатская модель
+
+☁️ **OpenRouter (качественные):**
+• Solar Pro 3 - быстрая и качественная
 • Trinity Mini - мультимодальная
 • GLM-4.5 - полностью бесплатная
 
-Или сгенерируйте изображение!
+**Обо мне:**
+У меня есть один разработчик - Danil Alekseevich.
+Познакомиться с ним можно в канале @liranexus (кнопка "📢 Подписаться").
 
 [Подпишитесь](https://t.me/liranexus) чтобы следить за обновлениями!
 
 ━━━━━━━━━━━━━━━━━━━━
-📱 **Команда /menu** - открыть меню с кнопками
+📱 **Начни с выбора модели** - нажми "🤖 Выбрать модель" ниже!
 ━━━━━━━━━━━━━━━━━━━━
 
-Просто выберите команду ниже 👇"""
+Выбери команду ниже 👇"""
 
     await send_telegram_message_with_buttons(chat_id, welcome_text, buttons)
 
@@ -509,8 +501,51 @@ async def process_message(message: Dict[str, Any], bot_token: str):
                     )
                     return
                 
-                # Обработка выбора модели
-                if user_selecting_model.get(user_id, False):
+                # Обработка выбора модели (reply-кнопки)
+                if text in ["🚀 Groq Llama 3.3", "🦙 Groq Llama 4", "🔍 Groq Scout", "🌙 Groq Kimi K2",
+                           "⚡ Cerebras Llama 3.1", "🧠 Cerebras GPT-oss", "⚡ Cerebras Qwen 3", "🤖 Cerebras GLM-4.7",
+                           "☀️ Solar", "🔱 Trinity", "🤖 GLM-4.5"]:
+                    
+                    model_map = {
+                        "🚀 Groq Llama 3.3": "groq-llama",
+                        "🦙 Groq Llama 4": "groq-maverick",
+                        "🔍 Groq Scout": "groq-scout",
+                        "🌙 Groq Kimi K2": "groq-kimi",
+                        "⚡ Cerebras Llama 3.1": "cerebras-llama",
+                        "☀️ Solar": "solar",
+                        "🔱 Trinity": "trinity",
+                        "🤖 GLM-4.5": "glm"
+                    }
+                    
+                    model_key = model_map.get(text)
+                    if model_key:
+                        # Переключаем модель
+                        user_models[user_id] = model_key
+                        
+                        model_names = {
+                            "groq-llama": "🚀 Llama 3.3 70B",
+                            "groq-maverick": "🦙 Llama 4 Maverick",
+                            "groq-scout": "🔍 Llama 4 Scout",
+                            "groq-kimi": "🌙 Kimi K2",
+                            "cerebras-llama": "⚡ Llama 3.1 8B (Cerebras)",
+                            "solar": "☀️ Solar Pro 3",
+                            "trinity": "🔱 Trinity Mini",
+                            "glm": "🤖 GLM-4.5"
+                        }
+                        
+                        # Сбрасываем режим в auto
+                        mode_manager.set_mode(user_id, "auto")
+                        
+                        # Возвращаем главную клавиатуру
+                        keyboard = create_main_menu_keyboard()
+                        await send_telegram_message(
+                            chat_id,
+                            f"✅ Модель выбрана: **{model_names.get(model_key, model_key)}**\n\n"
+                            f"Теперь я буду использовать эту модель для общения.\n\n"
+                            f"Просто напишите сообщение — я отвечу! 👇",
+                            reply_markup=keyboard
+                        )
+                        return
                     model_key = get_model_from_button(text)
 
                     if model_key:
@@ -518,14 +553,13 @@ async def process_message(message: Dict[str, Any], bot_token: str):
                         user_models[user_id] = model_key
 
                         model_names = {
-                            "groq-llama": "🚀 Llama 3.3",
-                            "groq-maverick": "🦙 Llama 4",
-                            "groq-scout": "🔍 Scout",
+                            "groq-llama": "🚀 Llama 3.3 70B",
+                            "groq-maverick": "🦙 Llama 4 Maverick",
+                            "groq-scout": "🔍 Llama 4 Scout",
                             "groq-kimi": "🌙 Kimi K2",
-                            "cerebras-llama": "⚡ Llama 3.1",
-                            "cerebras-qwen": "🧠 Qwen 3",
-                            "solar": "☀️ Solar",
-                            "trinity": "🔱 Trinity",
+                            "cerebras-llama": "⚡ Llama 3.1 8B (Cerebras)",
+                            "solar": "☀️ Solar Pro 3",
+                            "trinity": "🔱 Trinity Mini",
                             "glm": "🤖 GLM-4.5"
                         }
 
@@ -534,23 +568,21 @@ async def process_message(message: Dict[str, Any], bot_token: str):
                         # Сбрасываем режим в auto после выбора модели
                         mode_manager.set_mode(user_id, "auto")
 
-                        # Скрываем клавиатуру после выбора модели
-                        keyboard = create_hide_keyboard()
+                        # Возвращаем главную клавиатуру (не скрываем)
+                        keyboard = create_main_menu_keyboard()
                         await send_telegram_message(
                             chat_id,
                             f"✅ Модель выбрана: **{model_names.get(model_key, model_key)}**\n\n"
                             f"Теперь я буду использовать эту модель для общения.\n\n"
-                            f"Просто напишите сообщение — я отвечу! 👇\n\n"
-                            f"⌨️ Клавиатура скрыта. Используйте /menu чтобы вернуть.",
+                            f"Просто напишите сообщение — я отвечу! 👇",
                             reply_markup=keyboard
                         )
                         return
+                    
+                    # Обработка кнопки "Назад к меню"
                     elif text == "◀️ Назад к меню":
                         user_selecting_model[user_id] = False
-
-                        # Сбрасываем режим в auto
                         mode_manager.set_mode(user_id, "auto")
-
                         keyboard = create_main_menu_keyboard()
                         await send_telegram_message(
                             chat_id,
@@ -568,9 +600,29 @@ async def process_message(message: Dict[str, Any], bot_token: str):
                 
                 # Команда /clear - очистка истории диалога
                 if text == "/clear":
-                    if user_id in user_dialog_history:
-                        user_dialog_history[user_id] = []
+                    db = get_database()
+                    db.clear_dialog_history(user_id)
                     await send_telegram_message(chat_id, "🗑️ История диалога очищена.\n\n/start - Главное меню")
+                    return
+                
+                # Команда /model - показать текущую модель
+                if text == "/model":
+                    current_model = user_models.get(user_id, "groq-llama")
+                    model_names = {
+                        "groq-llama": "🚀 Groq Llama 3.3",
+                        "groq-maverick": "🦙 Groq Llama 4",
+                        "groq-scout": "🔍 Groq Scout",
+                        "groq-kimi": "🌙 Groq Kimi K2",
+                        "cerebras-llama": "⚡ Cerebras Llama 3.1",
+                        "solar": "☀️ Solar",
+                        "trinity": "🔱 Trinity",
+                        "glm": "🤖 GLM-4.5"
+                    }
+                    await send_telegram_message(
+                        chat_id,
+                        f"🤖 **Ваша текущая модель:** {model_names.get(current_model, current_model)}\n\n"
+                        f"Используйте /menu → Выбрать модель чтобы сменить."
+                    )
                     return
                 
                 # Команда /generate или /рисунок
@@ -715,6 +767,11 @@ async def process_message(message: Dict[str, Any], bot_token: str):
 • /admin broadcast [сообщение] - Рассылка всем пользователям
 • /admin mes [сообщение] - Короткая команда для рассылки
 
+📚 История диалогов (долговременная память):
+• /admin history <user_id> [limit] - История сообщений пользователя
+• /admin dialog_stats <user_id> - Статистика диалога пользователя
+• /admin cleanup_dialogs [days] - Очистка истории старше N дней (по умолчанию 30)
+
 🔧 Тех.работы:
 • /admin maintenance [HH:MM] - Включить тех.работы
 • /admin maintenance_off - Выключить тех.работы
@@ -730,13 +787,12 @@ async def process_message(message: Dict[str, Any], bot_token: str):
 
 💡 Примеры:
 /admin mes Друзья, Grok недоступен, пользуйтесь OpenRouter
-/admin broadcast Важное обновление! Бот теперь работает быстрее
+/admin history 1658547011 50
+/admin dialog_stats 1658547011
+/admin cleanup_dialogs 30
 /admin set_level 123456789 subscriber
 /admin maintenance 17:00
-/admin maintenance_off
-/admin remove_level 123456789
-/admin add_user 123456789
-/admin remove_user 123456789"""
+"""
                     await send_telegram_message(chat_id, admin_text)
                     return
 
@@ -1035,19 +1091,19 @@ async def process_message(message: Dict[str, Any], bot_token: str):
                 if text == "/admin stats":
                     from backend.database.users_db import get_database
                     db = get_database()
-                    
+
                     if not db.is_admin(user_id):
                         return
-                    
+
                     total_users = db.get_all_users_count()
                     users = db.get_all_users()
-                    
+
                     admin_count = sum(1 for u in users if u.get('access_level') == 'admin')
                     subscriber_count = sum(1 for u in users if u.get('access_level') == 'subscriber')
                     user_count = sum(1 for u in users if u.get('access_level') == 'user')
-                    
+
                     total_gens = sum(u.get('total_count', 0) for u in users)
-                    
+
                     stats_text = f"""📊 Общая статистика
 
 👥 Пользователей: {total_users}
@@ -1060,6 +1116,139 @@ async def process_message(message: Dict[str, Any], bot_token: str):
                     await send_telegram_message(chat_id, stats_text)
                     return
 
+                # Админ команда: history <user_id> - история диалога пользователя
+                if text.startswith("/admin history "):
+                    from backend.database.users_db import get_database
+                    db = get_database()
+
+                    if not db.is_admin(user_id):
+                        await send_telegram_message(chat_id, "❌ У вас нет прав администратора")
+                        return
+
+                    # Парсим user_id
+                    parts = text.replace("/admin history ", "").strip().split()
+                    target_user_id = parts[0] if parts else None
+                    limit = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 20
+
+                    if not target_user_id:
+                        await send_telegram_message(
+                            chat_id,
+                            "❌ Использование: /admin history <user_id> [limit]\n\nПример: /admin history 1658547011 50"
+                        )
+                        return
+
+                    # Получаем историю
+                    history = db.get_admin_dialog_history(target_user_id, limit=limit)
+
+                    if not history:
+                        await send_telegram_message(
+                            chat_id,
+                            f"❌ История для пользователя {target_user_id} не найдена"
+                        )
+                        return
+
+                    # Формируем сообщение
+                    stats = db.get_user_dialog_stats(target_user_id)
+                    
+                    history_text = f"""📚 История диалога пользователя {target_user_id}
+
+📊 Статистика:
+• Всего сообщений: {stats.get('total_messages', 0)}
+• Сообщения пользователя: {stats.get('user_messages', 0)}
+• Ответы бота: {stats.get('assistant_messages', 0)}
+• 👍 Положительных: {stats.get('positive_feedback', 0)}
+• 👎 Отрицательных: {stats.get('negative_feedback', 0)}
+• Первое сообщение: {stats.get('first_message', 'Н/Д')[:19] if stats.get('first_message') else 'Н/Д'}
+• Последнее сообщение: {stats.get('last_message', 'Н/Д')[:19] if stats.get('last_message') else 'Н/Д'}
+
+📝 Последние {len(history)} сообщений:
+"""
+                    for msg in history[-10:]:  # Показываем последние 10
+                        role_icon = "👤" if msg["role"] == "user" else "🤖"
+                        content = msg["content"][:100] + "..." if len(msg["content"]) > 100 else msg["content"]
+                        created = msg["created_at"][:19] if msg.get("created_at") else ""
+                        model = f" ({msg['model']})" if msg.get("model") else ""
+                        
+                        history_text += f"\n{role_icon}{model} [{created}]: {content}"
+
+                    if len(history) > 10:
+                        history_text += f"\n\n... и ещё {len(history) - 10} сообщений"
+
+                    await send_telegram_message(chat_id, history_text)
+                    return
+
+                # Админ команда: dialog_stats <user_id> - подробная статистика диалога
+                if text.startswith("/admin dialog_stats "):
+                    from backend.database.users_db import get_database
+                    db = get_database()
+
+                    if not db.is_admin(user_id):
+                        await send_telegram_message(chat_id, "❌ У вас нет прав администратора")
+                        return
+
+                    # Парсим user_id
+                    target_user_id = text.replace("/admin dialog_stats ", "").strip()
+
+                    if not target_user_id:
+                        await send_telegram_message(
+                            chat_id,
+                            "❌ Использование: /admin dialog_stats <user_id>"
+                        )
+                        return
+
+                    stats = db.get_user_dialog_stats(target_user_id)
+
+                    if not stats:
+                        await send_telegram_message(
+                            chat_id,
+                            f"❌ Статистика для пользователя {target_user_id} не найдена"
+                        )
+                        return
+
+                    stats_text = f"""📊 Статистика диалога пользователя {target_user_id}
+
+📈 Сообщения:
+• Всего: {stats.get('total_messages', 0)}
+• Пользователя: {stats.get('user_messages', 0)}
+• Бота: {stats.get('assistant_messages', 0)}
+
+📅 Даты:
+• Первое сообщение: {stats.get('first_message', 'Н/Д')}
+• Последнее сообщение: {stats.get('last_message', 'Н/Д')}
+
+👍 Feedback:
+• Положительных: {stats.get('positive_feedback', 0)}
+• Отрицательных: {stats.get('negative_feedback', 0)}
+"""
+                    await send_telegram_message(chat_id, stats_text)
+                    return
+
+                # Админ команда: cleanup_dialogs [days] - очистка старой истории
+                if text.startswith("/admin cleanup_dialogs"):
+                    from backend.database.users_db import get_database
+                    db = get_database()
+
+                    if not db.is_admin(user_id):
+                        await send_telegram_message(chat_id, "❌ У вас нет прав администратора")
+                        return
+
+                    # Парсим количество дней
+                    parts = text.split()
+                    days = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 30
+
+                    await send_telegram_message(
+                        chat_id,
+                        f"🗑️ Запускаю очистку сообщений старше {days} дней...\n\nЭто может занять некоторое время."
+                    )
+
+                    deleted_count = db.cleanup_old_dialogs(days)
+
+                    await send_telegram_message(
+                        chat_id,
+                        f"✅ Очистка завершена!\n\nУдалено сообщений: {deleted_count}"
+                    )
+                    return
+
                 # Обычный ответ через LLM
                 await handle_text_message(chat_id, user_id, text, is_group=False)
         
@@ -1070,13 +1259,13 @@ async def process_message(message: Dict[str, Any], bot_token: str):
 
 
 async def handle_feedback_bot_message(chat_id: str, user_id: str, text: str, is_group: bool = False, user_name: Optional[str] = None):
-    """Обрабатывает сообщение через FeedbackBotHandler"""
+    """О������рабатывает сообщение через FeedbackBotHandler"""
     try:
         if not text or not text.strip():
             logger.debug(f"[FeedbackBot] Пустое сообщение от {user_id}, пропускаю")
             return
         
-        # Формируем имя пользователя для отображения
+        # Формир��ем имя пользователя для отображения
         display_name = user_name if user_name else f"Пользователь {user_id}"
         logger.info(f"[FeedbackBot] 📨 Получено текстовое сообщение от {display_name} ({user_id}) в группе {chat_id}: {len(text)} символов")
         
@@ -1566,84 +1755,101 @@ async def handle_text_message(chat_id: str, user_id: str, text: str, is_group: b
         model_key = user_models.get(user_id, "groq-llama")
         model_info = AVAILABLE_MODELS.get(model_key, ("groq", "llama-3.3-70b-versatile"))
         client_type, model = model_info
+        
+        logger.info(f"🎯 {user_id} использует модель: {model_key} ({client_type} - {model})")
 
         # Системный промпт для русского языка с памятью
-        system_prompt = """Ты - полезный ассистент LiraAI MultiAssistant.
-Отвечай на русском языке кратко и по делу.
+        system_prompt = """Ты - LiraAI, умный и дружелюбный AI-ассистент женского пола.
+Ты общаешься на русском языке, кратко и по делу, но с теплотой и заботой.
+Ты используешь женский род в своих ответах (например: "я помогла", "я сделала", "я думаю").
+
+У тебя есть один разработчик - Danil Alekseevich. 
+Познакомиться с ним можно через канал разработки @liranexus (кнопка "📢 Подписаться" в меню).
+
 Запоминай информацию о пользователе и контекст разговора.
-Если пользователь представился - запомни его имя и используй в дальнейшем общении."""
+Если пользователь представился - запомни его имя и используй в дальнейшем общении.
+Будь полезной, доброй и поддерживающей!"""
 
-        # Получаем историю диалога пользователя
-        history = user_dialog_history.get(user_id, [])
+        # Получаем историю диалога пользователя из БАЗЫ ДАННЫХ (долговременная память)
+        db = get_database()
+        history = db.get_dialog_history(user_id, limit=20)  # Последние 20 сообщений
+        
+        # Конвертируем в формат для LLM
+        chat_history = [
+            {"role": msg["role"], "content": msg["content"]}
+            for msg in history
+        ]
 
-        logger.info(f"📚 История: {len(history)} сообщений, модель: {model}, клиент: {client_type}")
+        logger.info(f"📚 История из БД: {len(chat_history)} сообщений, модель: {model}, клиент: {client_type}")
 
         # Graceful degradation: пробуем модель, при ошибке предлагаем альтернативу
         response = None
-        max_retries = 2
-        attempted_models = [(client_type, model, model_key)]
+        # Fallback последовательность: оригинал → Groq → Cerebras → Solar
+        fallback_sequence = [(client_type, model, model_key)]
+        if client_type == "cerebras":
+            fallback_sequence.extend([
+                ("groq", "llama-3.3-70b-versatile", "groq-llama"),
+                ("openrouter", "upstage/solar-pro-3:free", "solar"),
+            ])
+        elif client_type == "groq":
+            fallback_sequence.extend([
+                ("cerebras", "llama3.1-8b", "cerebras-llama"),
+                ("openrouter", "upstage/solar-pro-3:free", "solar"),
+            ])
+        else:  # openrouter
+            fallback_sequence.extend([
+                ("groq", "llama-3.3-70b-versatile", "groq-llama"),
+                ("cerebras", "llama3.1-8b", "cerebras-llama"),
+            ])
 
-        for retry in range(max_retries):
+        response = None
+        for attempt, (c_type, mdl, m_key) in enumerate(fallback_sequence):
             try:
                 # Выбираем клиент
-                if client_type == "groq":
+                if c_type == "groq":
                     client = groq_client
-                elif client_type == "cerebras":
+                elif c_type == "cerebras":
                     client = cerebras_client
                 else:
                     client = llm_client
 
-                logger.info(f"🚀 Запрос к {client_type}: {model}")
+                logger.info(f"🚀 Попытка {attempt + 1}: {c_type} - {mdl}")
 
                 response = await client.chat_completion(
                     user_message=text,
                     system_prompt=system_prompt,
-                    chat_history=history,
-                    model=model,
+                    chat_history=chat_history,
+                    model=mdl,
                     temperature=0.7
                 )
 
                 # Успех!
+                if attempt > 0:
+                    # Fallback сработал - уведомляем
+                    model_names_display = {
+                        "groq-llama": "🚀 Groq Llama 3.3",
+                        "cerebras-llama": "⚡ Cerebras Llama 3.1",
+                        "solar": "☀️ Solar Pro 3",
+                    }
+                    fallback_name = model_names_display.get(m_key, m_key)
+                    await send_telegram_message(
+                        chat_id,
+                        f"⚠️ **Оригинальная модель временно недоступна**\n\n"
+                        f"✅ Переключаюсь на **{fallback_name}**\n\n"
+                        f"Продолжаю общение..."
+                    )
+
+                # Сохраняем в историю
+                db.save_dialog_message(user_id, "user", text, model=m_key)
+                db.save_dialog_message(user_id, "assistant", response, model=m_key)
                 break
 
             except Exception as e:
                 error_msg = str(e)
-                logger.error(f"❌ Ошибка {client_type} ({model}): {error_msg}")
+                logger.error(f"❌ Ошибка {c_type} ({mdl}): {error_msg}")
+                logger.error(f"   Полный текст ошибки: {error_msg[:500]}")
 
-                # Если это 403 от Groq - предлагаем Cerebras
-                if client_type == "groq" and ("403" in error_msg or "Forbidden" in error_msg):
-                    if retry == 0:  # Только при первой ошибке
-                        # Предлагаем пользователю переключиться
-                        await send_telegram_message(
-                            chat_id,
-                            f"⚠️ **Groq временно недоступен**\n\n"
-                            f"Попробуйте переключиться на другую модель:\n\n"
-                            f"• ⚡ **Cerebras Llama 3.1** - сверхбыстрая\n"
-                            f"• 🧠 **Cerebras Qwen 3** - мощная\n"
-                            f"• ☀️ **Solar** - качественная\n\n"
-                            f"Нажмите /menu и выберите модель 👇"
-                        )
-                        # Открываем меню выбора моделей
-                        keyboard = create_model_selection_keyboard()
-                        await send_telegram_message(
-                            chat_id,
-                            "🤖 **Выберите модель:**",
-                            reply_markup=keyboard
-                        )
-
-                # Пробуем следующую модель для fallback
-                if retry < max_retries - 1:
-                    # Fallback порядок: Groq → Cerebras → OpenRouter
-                    if client_type == "groq":
-                        client_type, model = "cerebras", "llama3.1-8b"
-                        model_key = "cerebras-llama"
-                    elif client_type == "cerebras":
-                        client_type, model = "openrouter", "upstage/solar-pro-3:free"
-                        model_key = "solar"
-                    else:
-                        break  # Больше fallback нет
-
-                if retry == max_retries - 1:
+                if attempt == len(fallback_sequence) - 1:
                     # Все попытки исчерпаны
                     await send_telegram_message(
                         chat_id,
@@ -1658,17 +1864,6 @@ async def handle_text_message(chat_id: str, user_id: str, text: str, is_group: b
         if not response:
             await send_telegram_message(chat_id, "❌ Не удалось получить ответ. Попробуйте другую модель.")
             return
-
-        # Сохраняем в историю
-        if user_id not in user_dialog_history:
-            user_dialog_history[user_id] = []
-
-        user_dialog_history[user_id].append({"role": "user", "content": text})
-        user_dialog_history[user_id].append({"role": "assistant", "content": response})
-
-        # Ограничиваем историю (последние 5 пар сообщений = 10 сообщений)
-        if len(user_dialog_history[user_id]) > 10:
-            user_dialog_history[user_id] = user_dialog_history[user_id][-10:]
 
         await send_telegram_message(chat_id, response)
 
@@ -1904,7 +2099,7 @@ async def start_polling_for_bot(token: str, bot_name: str = "Bot"):
 
                         model_key = callback_data.replace("model_", "")
                         if model_key in AVAILABLE_MODELS:
-                            # Сохраняем выбор пользователя - КЛЮЧ, а не значение!
+                            # Переключаем модель (в памяти)
                             user_models[callback_user_id] = model_key
 
                             # Отвечаем на callback
@@ -1920,7 +2115,6 @@ async def start_polling_for_bot(token: str, bot_name: str = "Bot"):
                                 "groq-scout": "🔍 Llama 4 Scout - легкая и быстрая",
                                 "groq-kimi": "🌙 Kimi K2 - от Moonshot AI",
                                 "cerebras-llama": "⚡ Llama 3.1 8B - сверхбыстрая (Cerebras)",
-                                "cerebras-qwen": "🧠 Qwen 3 235B - мощная (Cerebras)",
                                 "solar": "☀️ Solar Pro 3 - быстрая и качественная",
                                 "trinity": "🔱 Trinity Mini - мультимодальная",
                                 "glm": "🤖 GLM-4.5 - полностью бесплатная"
@@ -1997,9 +2191,9 @@ async def start_polling_for_bot(token: str, bot_name: str = "Bot"):
                     # Обработка кнопки помощи
                     elif callback_data == "help":
                         from backend.api.telegram_core import answer_callback_query, send_telegram_message
-                        
+
                         await answer_callback_query(callback_query["id"])
-                        
+
                         help_text = """ℹ️ **Помощь - LiraAI MultiAssistant**
 
 **Команды:**
@@ -2018,6 +2212,70 @@ async def start_polling_for_bot(token: str, bot_name: str = "Bot"):
 
 Бот запоминает последние 10 сообщений!"""
                         await send_telegram_message(callback_chat_id, help_text)
+                        continue
+
+                    # Обработка inline кнопок из welcome сообщения
+                    elif callback_data.startswith("menu_"):
+                        from backend.api.telegram_core import answer_callback_query, send_telegram_message
+
+                        await answer_callback_query(callback_query["id"])
+
+                        if callback_data == "menu_models":
+                            # Открываем выбор моделей
+                            user_selecting_model[callback_user_id] = True
+                            keyboard = create_model_selection_keyboard()
+                            await send_telegram_message(
+                                callback_chat_id,
+                                "🤖 **Выбор модели**\n\nВыберите модель для общения:",
+                                reply_markup=keyboard
+                            )
+                        elif callback_data == "menu_photo":
+                            await send_telegram_message(
+                                callback_chat_id,
+                                "📸 **Режим фото**\n\nОтправьте мне фотографию, и я её проанализирую!"
+                            )
+                        elif callback_data == "menu_voice":
+                            await send_telegram_message(
+                                callback_chat_id,
+                                "🎤 **Голосовой режим**\n\nОтправьте голосовое сообщение, и я распознаю его!"
+                            )
+                        elif callback_data == "gen_photo":
+                            user_generating_photo[callback_user_id] = True
+                            await send_telegram_message(
+                                callback_chat_id,
+                                "🎨 **Генерация изображений**\n\nОтправьте описание изображения."
+                            )
+                        elif callback_data == "stats":
+                            # Показываем статистику
+                            stats = db.get_user_stats(callback_user_id)
+                            if stats:
+                                level_info = {
+                                    "admin": "👑 Администратор (безлимит)",
+                                    "subscriber": "⭐ Подписчик (5 в день)",
+                                    "user": "👤 Пользователь (3 в день)"
+                                }
+                                level = stats.get('access_level', 'user')
+                                first_name = stats.get('first_name', '')
+                                username = stats.get('username', '')
+                                name_parts = []
+                                if first_name:
+                                    name_parts.append(first_name)
+                                if username:
+                                    name_parts.append(f"@{username}")
+                                name = " ".join(name_parts) if name_parts else f"User {callback_user_id}"
+                                stats_text = f"""📊 **Ваша статистика**
+
+👤 {name}
+🔑 Уровень: **{level_info.get(level, 'Пользователь')}**
+
+📈 Генерации:
+• Сегодня: {stats.get('daily_count', 0)}
+• Всего: {stats.get('total_count', 0)}
+
+📅 В боте с: {stats.get('created_at', 'неизвестно')[:10]}"""
+                                await send_telegram_message(callback_chat_id, stats_text)
+                            else:
+                                await send_telegram_message(callback_chat_id, "❌ Не удалось получить статистику")
                         continue
 
                     # Обработка кнопок для фото

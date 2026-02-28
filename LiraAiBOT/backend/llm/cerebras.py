@@ -5,8 +5,13 @@ Cerebras API клиент.
 import asyncio
 import logging
 import os
+from pathlib import Path
 from typing import Optional, Any
 import aiohttp
+from dotenv import load_dotenv
+
+# Загружаем .env
+load_dotenv()
 
 logger = logging.getLogger("bot.llm")
 

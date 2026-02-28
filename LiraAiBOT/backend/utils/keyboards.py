@@ -98,8 +98,7 @@ def create_model_selection_keyboard() -> Dict[str, Any]:
                 {"text": "🌙 Groq Kimi K2"}
             ],
             [
-                {"text": "⚡ Cerebras Llama 3.1"},
-                {"text": "🧠 Cerebras Qwen 3"}
+                {"text": "⚡ Cerebras Llama 3.1"}
             ],
             [
                 {"text": "☀️ Solar"},
