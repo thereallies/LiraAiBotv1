@@ -43,6 +43,12 @@ if not USE_SUPABASE:
 _user_cache: Dict[str, Dict] = {}
 _limits_cache: Dict[str, Dict] = {}
 
+# Кэш настроек бота (тех.режим и т.д.)
+_bot_settings_cache: Dict[str, Any] = {
+    "maintenance_enabled": False,
+    "maintenance_until": None
+}
+
 # Уровни доступа и квоты
 ACCESS_LEVELS = {
     "admin": {"daily_limit": -1, "description": "Администратор (безлимит)"},
@@ -160,24 +166,32 @@ class BotDatabase:
         # Если используем Supabase - отправляем данные
         if USE_SUPABASE and supabase:
             try:
-                data = {
-                    "user_id": user_id,
-                    "username": username,
-                    "first_name": first_name,
-                    "last_name": last_name,
-                    "last_seen": datetime.now().isoformat()
-                }
-                
                 # Проверяем существует ли пользователь
-                result = supabase.table("users").select("user_id, access_level").eq("user_id", user_id).execute()
+                result = supabase.table("users").select("user_id, username, first_name, last_name, access_level").eq("user_id", user_id).execute()
                 
                 if result.data:
-                    # Обновляем
-                    supabase.table("users").update(data).eq("user_id", user_id).execute()
+                    # Обновляем ТОЛЬКО изменённые поля (не затираем existing data)
+                    update_data = {"last_seen": datetime.now().isoformat()}
+                    if username:
+                        update_data["username"] = username
+                    if first_name:
+                        update_data["first_name"] = first_name
+                    if last_name:
+                        update_data["last_name"] = last_name
+                    
+                    supabase.table("users").update(update_data).eq("user_id", user_id).execute()
                     # Обновляем кэш access_level
                     _user_cache[user_id]["access_level"] = result.data[0].get("access_level", "user")
                 else:
-                    # Создаём
+                    # Создаём нового пользователя
+                    data = {
+                        "user_id": user_id,
+                        "username": username,
+                        "first_name": first_name,
+                        "last_name": last_name,
+                        "access_level": "user",
+                        "last_seen": datetime.now().isoformat()
+                    }
                     supabase.table("users").insert(data).execute()
                     # Создаём лимиты
                     supabase.table("generation_limits").insert({
@@ -185,8 +199,7 @@ class BotDatabase:
                         "daily_count": 0,
                         "total_count": 0
                     }).execute()
-                    # Кэш остаётся "user"
-                    
+
             except Exception as e:
                 # Логируем ошибку но не падаем - кэш работает
                 logger.warning(f"⚠️ Supabase недоступен, работаем в памяти: {e}")
@@ -258,7 +271,20 @@ class BotDatabase:
         # Если используем Supabase
         if USE_SUPABASE and supabase:
             try:
-                supabase.table("users").update({"access_level": level}).eq("user_id", user_id).execute()
+                # Сначала получаем текущие данные пользователя
+                result = supabase.table("users").select("username, first_name, last_name").eq("user_id", user_id).execute()
+                
+                if result.data:
+                    # Обновляем ТОЛЬКО access_level, сохраняя остальные поля
+                    update_data = {"access_level": level}
+                    supabase.table("users").update(update_data).eq("user_id", user_id).execute()
+                else:
+                    # Пользователя нет - создаём
+                    supabase.table("users").insert({
+                        "user_id": user_id,
+                        "access_level": level
+                    }).execute()
+                
                 return True
             except Exception as e:
                 logger.error(f"❌ Ошибка Supabase в set_user_access_level: {e}")
@@ -352,6 +378,12 @@ class BotDatabase:
 
     def set_maintenance_mode(self, enabled: bool, until_time: str = None):
         """Включает/выключает режим тех.работ"""
+        global _bot_settings_cache
+        
+        # Сразу обновляем кэш!
+        _bot_settings_cache["maintenance_enabled"] = enabled
+        _bot_settings_cache["maintenance_until"] = until_time
+        
         data = {
             "key": "maintenance_enabled",
             "value": "1" if enabled else "0"
@@ -365,6 +397,7 @@ class BotDatabase:
                 return
             except Exception as e:
                 logger.error(f"❌ Ошибка Supabase в set_maintenance_mode: {e}")
+                # Кэш уже обновлён, тех.режим работает в памяти
         
         # SQLite версия
         conn = self._get_connection()
@@ -380,29 +413,53 @@ class BotDatabase:
         conn.close()
 
     def get_maintenance_mode(self) -> Dict[str, Any]:
-        """Получает статус режима тех.работ"""
+        """Получает статус режима тех.работ (с кэшем)"""
+        global _bot_settings_cache
+        
         if USE_SUPABASE and supabase:
             try:
                 result = supabase.table("bot_settings").select("key, value").in_("key", ["maintenance_enabled", "maintenance_until"]).execute()
                 settings = {row["key"]: row["value"] for row in result.data} if result.data else {}
+                
+                # Обновляем кэш
+                _bot_settings_cache["maintenance_enabled"] = settings.get("maintenance_enabled", "0") == "1"
+                _bot_settings_cache["maintenance_until"] = settings.get("maintenance_until", None)
+                
                 return {
-                    "enabled": settings.get("maintenance_enabled", "0") == "1",
-                    "until_time": settings.get("maintenance_until", None)
+                    "enabled": _bot_settings_cache["maintenance_enabled"],
+                    "until_time": _bot_settings_cache["maintenance_until"]
                 }
             except Exception as e:
-                logger.error(f"❌ Ошибка Supabase в get_maintenance_mode: {e}")
+                logger.warning(f"⚠️ Supabase недоступен, используем кэш тех.режима: {e}")
+                # Возвращаем кэш (тех.режим всё равно работает!)
+                return {
+                    "enabled": _bot_settings_cache.get("maintenance_enabled", False),
+                    "until_time": _bot_settings_cache.get("maintenance_until", None)
+                }
         
-        # SQLite версия
-        conn = self._get_connection()
-        cursor = conn.cursor()
-        cursor.execute("SELECT key, value FROM bot_settings WHERE key IN ('maintenance_enabled', 'maintenance_until')")
-        rows = cursor.fetchall()
-        settings = {row["key"]: row["value"] for row in rows}
-        conn.close()
-        return {
-            "enabled": settings.get("maintenance_enabled", "0") == "1",
-            "until_time": settings.get("maintenance_until", None)
-        }
+        # SQLite версия (создаём таблицу если нет)
+        try:
+            conn = self._get_connection()
+            cursor = conn.cursor()
+            cursor.execute("SELECT key, value FROM bot_settings WHERE key IN ('maintenance_enabled', 'maintenance_until')")
+            rows = cursor.fetchall()
+            settings = {row["key"]: row["value"] for row in rows}
+            conn.close()
+            
+            # Обновляем кэш
+            _bot_settings_cache["maintenance_enabled"] = settings.get("maintenance_enabled", "0") == "1"
+            _bot_settings_cache["maintenance_until"] = settings.get("maintenance_until", None)
+            
+            return {
+                "enabled": _bot_settings_cache["maintenance_enabled"],
+                "until_time": _bot_settings_cache["maintenance_until"]
+            }
+        except sqlite3.OperationalError:
+            # Таблицы нет - возвращаем кэш
+            return {
+                "enabled": _bot_settings_cache.get("maintenance_enabled", False),
+                "until_time": _bot_settings_cache.get("maintenance_until", None)
+            }
 
     def get_all_users_for_notification(self) -> List[str]:
         """Получает список всех user_id для рассылки уведомлений (с кэшем)"""

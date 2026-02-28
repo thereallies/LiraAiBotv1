@@ -21,6 +21,7 @@ from backend.api.telegram_vision import process_telegram_photo
 from backend.api.telegram_voice import process_telegram_voice
 from backend.llm.openrouter import OpenRouterClient
 from backend.llm.groq import get_groq_client
+from backend.llm.cerebras import get_cerebras_client
 from backend.utils.keyboards import (
     create_main_menu_keyboard,
     create_hide_keyboard,
@@ -51,6 +52,9 @@ llm_client = OpenRouterClient(config)
 
 # Создаем Groq клиент для быстрых моделей
 groq_client = get_groq_client()
+
+# Создаем Cerebras клиент для сверхбыстрых моделей
+cerebras_client = get_cerebras_client()
 
 # Инициализируем FeedbackBotHandler если включен
 feedback_bot_handler = None
@@ -86,10 +90,15 @@ user_dialog_history: Dict[str, List[Dict[str, str]]] = {}
 
 # Доступные модели для выбора
 AVAILABLE_MODELS = {
+    # Groq модели
     "groq-llama": ("groq", "llama-3.3-70b-versatile"),  # Groq Llama 3.3
     "groq-maverick": ("groq", "meta-llama/llama-4-maverick-17b-128e-instruct"),  # Groq Llama 4 Maverick
     "groq-scout": ("groq", "meta-llama/llama-4-scout-17b-16e-instruct"),  # Groq Llama 4 Scout
     "groq-kimi": ("groq", "moonshotai/kimi-k2-instruct"),  # Groq Kimi K2
+    # Cerebras модели
+    "cerebras-llama": ("cerebras", "llama3.1-8b"),  # Cerebras Llama 3.1 8B
+    "cerebras-qwen": ("cerebras", "qwen-3-235b-a22b-instruct-2507"),  # Cerebras Qwen 3 235B
+    # OpenRouter модели
     "solar": ("openrouter", "upstage/solar-pro-3:free"),  # OpenRouter Solar Pro 3
     "trinity": ("openrouter", "arcee-ai/trinity-mini:free"),  # OpenRouter Trinity Mini
     "glm": ("openrouter", "z-ai/glm-4.5-air:free"),  # OpenRouter GLM-4.5
@@ -105,12 +114,16 @@ async def show_start_menu(chat_id: str):
 
     buttons = [
         [
-            {"text": "🚀 Llama 3.3", "callback_data": "model_groq-llama"},
-            {"text": "🦙 Llama 4", "callback_data": "model_groq-maverick"},
+            {"text": "🚀 Groq Llama 3.3", "callback_data": "model_groq-llama"},
+            {"text": "🦙 Groq Llama 4", "callback_data": "model_groq-maverick"},
         ],
         [
-            {"text": "🔍 Scout", "callback_data": "model_groq-scout"},
-            {"text": "🌙 Kimi K2", "callback_data": "model_groq-kimi"},
+            {"text": "🔍 Groq Scout", "callback_data": "model_groq-scout"},
+            {"text": "🌙 Groq Kimi K2", "callback_data": "model_groq-kimi"},
+        ],
+        [
+            {"text": "⚡ Cerebras Llama 3.1", "callback_data": "model_cerebras-llama"},
+            {"text": "🧠 Cerebras Qwen 3", "callback_data": "model_cerebras-qwen"},
         ],
         [
             {"text": "☀️ Solar", "callback_data": "model_solar"},
@@ -141,13 +154,15 @@ async def show_start_menu(chat_id: str):
 
 🆓 Все модели БЕСПЛАТНЫЕ!
 
-🚀 Groq модели (очень быстрые):
-• Llama 3.3 70B - лучшая для русского
-• Llama 4 Maverick - новейшая от Meta
-• Llama 4 Scout - легкая и быстрая
-• Kimi K2 - от Moonshot AI
+⚡ **Быстрые модели:**
+• Groq Llama 3.3 70B - лучшая для русского
+• Groq Llama 4 Maverick - новейшая от Meta
+• Groq Scout - легкая и быстрая
+• Groq Kimi K2 - от Moonshot AI
+• Cerebras Llama 3.1 - сверхбыстрая
+• Cerebras Qwen 3 235B - мощная
 
-☁️ OpenRouter модели:
+☁️ **OpenRouter модели:**
 • Solar Pro 3 - быстрая, качественная
 • Trinity Mini - мультимодальная
 • GLM-4.5 - полностью бесплатная
@@ -918,28 +933,32 @@ async def process_message(message: Dict[str, Any], bot_token: str):
 
                     users = db.get_all_users()
                     level_icons = {"admin": "👑", "subscriber": "⭐", "user": "👤"}
+                    
+                    # Сортировка по уровню доступа: admin → subscriber → user
+                    level_priority = {"admin": 0, "subscriber": 1, "user": 2}
+                    users_sorted = sorted(users, key=lambda u: level_priority.get(u.get('access_level', 'user'), 3))
 
-                    users_text = "👥 Все пользователи:\n\n"
-                    for u in users[:20]:  # Показываем последние 20
+                    users_text = "👥 Все пользователи (отсортировано по уровню):\n\n"
+                    for u in users_sorted[:20]:  # Показываем первые 20
                         icon = level_icons.get(u.get('access_level', 'user'), '👤')
                         first_name = u.get('first_name', '')
                         username = u.get('username', '')
                         uid = u.get('user_id', 'unknown')
                         daily = u.get('daily_count', 0)
-                        
+
                         # Формируем отображаемое имя с @username
                         name_parts = []
                         if first_name:
                             name_parts.append(first_name)
                         if username:
                             name_parts.append(f"@{username}")
-                        
+
                         name = " ".join(name_parts) if name_parts else f"User {uid}"
-                        
+
                         users_text += f"{icon} {name} ({uid}) - {daily} сегодня\n"
 
-                    if len(users) > 20:
-                        users_text += f"\n... и еще {len(users) - 20} пользователей"
+                    if len(users_sorted) > 20:
+                        users_text += f"\n... и еще {len(users_sorted) - 20} пользователей"
 
                     await send_telegram_message(chat_id, users_text)
                     return
@@ -1182,7 +1201,7 @@ async def handle_feedback_bot_photo(chat_id: str, user_id: str, message: Dict[st
         display_name = user_name if user_name else f"Пользователь {user_id}"
         logger.info(f"[FeedbackBot] 📸 Получено фото от {display_name} ({user_id}) в группе {chat_id}, file_id: {file_id}")
         
-        # Отправляем сообщение о начале обработки
+        # Отправляем сообщение о начале ������бработки
         logger.info(f"[FeedbackBot] Отправляю уведомление о начале анализа изображения")
         await send_telegram_message(chat_id, "🔍 Анализирую изображение...")
         
@@ -1543,14 +1562,6 @@ async def handle_text_message(chat_id: str, user_id: str, text: str, is_group: b
         model_info = AVAILABLE_MODELS.get(model_key, ("groq", "llama-3.3-70b-versatile"))
         client_type, model = model_info
 
-        # Выбираем клиент (Groq или OpenRouter)
-        if client_type == "groq":
-            client = groq_client
-            logger.info(f"📊 Используем Groq клиент: {model}")
-        else:
-            client = llm_client
-            logger.info(f"📊 Используем OpenRouter клиент: {model}")
-
         # Системный промпт для русского языка с памятью
         system_prompt = """Ты - полезный ассистент LiraAI MultiAssistent.
 Отвечай на русском языке кратко и по делу.
@@ -1560,19 +1571,88 @@ async def handle_text_message(chat_id: str, user_id: str, text: str, is_group: b
         # Получаем историю диалога пользователя
         history = user_dialog_history.get(user_id, [])
 
-        logger.info(f"📚 История: {len(history)} сообщений, модель: {model}, клиент: {'Groq' if client_type == 'groq' else 'OpenRouter'}")
+        logger.info(f"📚 История: {len(history)} сообщений, модель: {model}, клиент: {client_type}")
 
-        try:
-            response = await client.chat_completion(
-                user_message=text,
-                system_prompt=system_prompt,
-                chat_history=history,
-                model=model,
-                temperature=0.7
-            )
-        except Exception as e:
-            logger.error(f"❌ Ошибка LLM запроса: {e}, клиент: {client_type}, модель: {model}")
-            raise
+        # Graceful degradation: пробуем модель, при ошибке предлагаем альтернативу
+        response = None
+        max_retries = 2
+        attempted_models = [(client_type, model, model_key)]
+
+        for retry in range(max_retries):
+            try:
+                # Выбираем клиент
+                if client_type == "groq":
+                    client = groq_client
+                elif client_type == "cerebras":
+                    client = cerebras_client
+                else:
+                    client = llm_client
+
+                logger.info(f"🚀 Запрос к {client_type}: {model}")
+
+                response = await client.chat_completion(
+                    user_message=text,
+                    system_prompt=system_prompt,
+                    chat_history=history,
+                    model=model,
+                    temperature=0.7
+                )
+
+                # Успех!
+                break
+
+            except Exception as e:
+                error_msg = str(e)
+                logger.error(f"❌ Ошибка {client_type} ({model}): {error_msg}")
+
+                # Если это 403 от Groq - предлагаем Cerebras
+                if client_type == "groq" and ("403" in error_msg or "Forbidden" in error_msg):
+                    if retry == 0:  # Только при первой ошибке
+                        # Предлагаем пользователю переключиться
+                        await send_telegram_message(
+                            chat_id,
+                            f"⚠️ **Groq временно недоступен**\n\n"
+                            f"Попробуйте переключиться на другую модель:\n\n"
+                            f"• ⚡ **Cerebras Llama 3.1** - сверхбыстрая\n"
+                            f"• 🧠 **Cerebras Qwen 3** - мощная\n"
+                            f"• ☀️ **Solar** - качественная\n\n"
+                            f"Нажмите /menu и выберите модель 👇"
+                        )
+                        # Открываем меню выбора моделей
+                        keyboard = create_model_selection_keyboard()
+                        await send_telegram_message(
+                            chat_id,
+                            "🤖 **Выберите модель:**",
+                            reply_markup=keyboard
+                        )
+
+                # Пробуем следующую модель для fallback
+                if retry < max_retries - 1:
+                    # Fallback порядок: Groq → Cerebras → OpenRouter
+                    if client_type == "groq":
+                        client_type, model = "cerebras", "llama3.1-8b"
+                        model_key = "cerebras-llama"
+                    elif client_type == "cerebras":
+                        client_type, model = "openrouter", "upstage/solar-pro-3:free"
+                        model_key = "solar"
+                    else:
+                        break  # Больше fallback нет
+
+                if retry == max_retries - 1:
+                    # Все попытки исчерпаны
+                    await send_telegram_message(
+                        chat_id,
+                        f"❌ **Временная ошибка**\n\n"
+                        f"Не удалось получить ответ от нейросети.\n\n"
+                        f"Попробуйте:\n"
+                        f"1. Переключить модель (/menu → Выбрать модель)\n"
+                        f"2. Повторить запрос позже"
+                    )
+                    return
+
+        if not response:
+            await send_telegram_message(chat_id, "❌ Не удалось получить ответ. Попробуйте другую модель.")
+            return
 
         # Сохраняем в историю
         if user_id not in user_dialog_history:
@@ -1834,6 +1914,8 @@ async def start_polling_for_bot(token: str, bot_name: str = "Bot"):
                                 "groq-maverick": "🦙 Llama 4 Maverick - новейшая от Meta",
                                 "groq-scout": "🔍 Llama 4 Scout - легкая и быстрая",
                                 "groq-kimi": "🌙 Kimi K2 - от Moonshot AI",
+                                "cerebras-llama": "⚡ Llama 3.1 8B - сверхбыстрая (Cerebras)",
+                                "cerebras-qwen": "🧠 Qwen 3 235B - мощная (Cerebras)",
                                 "solar": "☀️ Solar Pro 3 - быстрая и качественная",
                                 "trinity": "🔱 Trinity Mini - мультимодальная",
                                 "glm": "🤖 GLM-4.5 - полностью бесплатная"

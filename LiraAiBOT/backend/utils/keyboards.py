@@ -83,19 +83,23 @@ BOT_MODES = {
 def create_model_selection_keyboard() -> Dict[str, Any]:
     """
     Создаёт клавиатуру для выбора модели.
-    
+
     Returns:
         JSON-структура клавиатуры для Telegram API
     """
     keyboard = {
         "keyboard": [
             [
-                {"text": "🚀 Llama 3.3"},
-                {"text": "🦙 Llama 4"}
+                {"text": "🚀 Groq Llama 3.3"},
+                {"text": "🦙 Groq Llama 4"}
             ],
             [
-                {"text": "🔍 Scout"},
-                {"text": "🌙 Kimi K2"}
+                {"text": "🔍 Groq Scout"},
+                {"text": "🌙 Groq Kimi K2"}
+            ],
+            [
+                {"text": "⚡ Cerebras Llama 3.1"},
+                {"text": "🧠 Cerebras Qwen 3"}
             ],
             [
                 {"text": "☀️ Solar"},
@@ -132,18 +136,23 @@ def get_mode_from_button(text: str) -> str:
 def get_model_from_button(text: str) -> str:
     """
     Определяет модель по тексту кнопки.
-    
+
     Args:
-        text: Текст кнопки (например, "🚀 Llama 3.3")
-    
+        text: Текст кнопки (например, "🚀 Groq Llama 3.3")
+
     Returns:
         ID модели (например, "groq-llama")
     """
     model_map = {
-        "🚀 Llama 3.3": "groq-llama",
-        "🦙 Llama 4": "groq-maverick",
-        "🔍 Scout": "groq-scout",
-        "🌙 Kimi K2": "groq-kimi",
+        # Groq модели
+        "🚀 Groq Llama 3.3": "groq-llama",
+        "🦙 Groq Llama 4": "groq-maverick",
+        "🔍 Groq Scout": "groq-scout",
+        "🌙 Groq Kimi K2": "groq-kimi",
+        # Cerebras модели
+        "⚡ Cerebras Llama 3.1": "cerebras-llama",
+        "🧠 Cerebras Qwen 3": "cerebras-qwen",
+        # OpenRouter модели
         "☀️ Solar": "solar",
         "🔱 Trinity": "trinity",
         "🤖 GLM-4.5": "glm"

@@ -120,7 +120,7 @@ async def startup_event():
     except Exception as e:
         logger.error(f"❌ Ошибка при инициализации: {e}")
         # Не падаем - polling будет работать даже если сервер не запустился
-        logger.info("⚠️ Продолжаем работу без веб-сервера...")
+        logger.info("⚠️ Продолжаем работу...")
 
 @app.on_event("shutdown")
 async def shutdown_event():
