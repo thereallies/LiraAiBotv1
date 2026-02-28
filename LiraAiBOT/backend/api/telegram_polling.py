@@ -522,6 +522,8 @@ async def process_message(message: Dict[str, Any], bot_token: str):
                             "groq-maverick": "🦙 Llama 4",
                             "groq-scout": "🔍 Scout",
                             "groq-kimi": "🌙 Kimi K2",
+                            "cerebras-llama": "⚡ Llama 3.1",
+                            "cerebras-qwen": "🧠 Qwen 3",
                             "solar": "☀️ Solar",
                             "trinity": "🔱 Trinity",
                             "glm": "🤖 GLM-4.5"
@@ -532,20 +534,23 @@ async def process_message(message: Dict[str, Any], bot_token: str):
                         # Сбрасываем режим в auto после выбора модели
                         mode_manager.set_mode(user_id, "auto")
 
-                        # Возвращаем главную клавиатуру
-                        keyboard = create_main_menu_keyboard()
+                        # Скрываем клавиатуру после выбора модели
+                        keyboard = create_hide_keyboard()
                         await send_telegram_message(
                             chat_id,
-                            f"✅ Модель выбрана: **{model_names.get(model_key, model_key)}**\n\nТеперь я буду использовать эту модель для общения.",
+                            f"✅ Модель выбрана: **{model_names.get(model_key, model_key)}**\n\n"
+                            f"Теперь я буду использовать эту модель для общения.\n\n"
+                            f"Просто напишите сообщение — я отвечу! 👇\n\n"
+                            f"⌨️ Клавиатура скрыта. Используйте /menu чтобы вернуть.",
                             reply_markup=keyboard
                         )
                         return
                     elif text == "◀️ Назад к меню":
                         user_selecting_model[user_id] = False
-                        
+
                         # Сбрасываем режим в auto
                         mode_manager.set_mode(user_id, "auto")
-                        
+
                         keyboard = create_main_menu_keyboard()
                         await send_telegram_message(
                             chat_id,
@@ -1563,7 +1568,7 @@ async def handle_text_message(chat_id: str, user_id: str, text: str, is_group: b
         client_type, model = model_info
 
         # Системный промпт для русского языка с памятью
-        system_prompt = """Ты - полезный ассистент LiraAI MultiAssistent.
+        system_prompt = """Ты - полезный ассистент LiraAI MultiAssistant.
 Отвечай на русском языке кратко и по делу.
 Запоминай информацию о пользователе и контекст разговора.
 Если пользователь представился - запомни его имя и используй в дальнейшем общении."""
