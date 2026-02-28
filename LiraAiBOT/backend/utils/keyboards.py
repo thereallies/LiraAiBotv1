@@ -162,10 +162,10 @@ def get_model_from_button(text: str) -> str:
 def get_mode_prompt(mode: str) -> str:
     """
     Возвращает подсказку для режима.
-    
+
     Args:
         mode: Название режима
-    
+
     Returns:
         Текст подсказки
     """
@@ -178,6 +178,41 @@ def get_mode_prompt(mode: str) -> str:
         "auto": "🤖 **Автоматический режим**\n\nЯ сам определю, что вы хотите сделать!",
         "select_model": "🤖 **Выбор модели**\n\nВыберите модель из списка ниже!",
         "hide": "⬇️ Клавиатура скрыта. Используйте /menu чтобы вернуть.",
-        "stats": "📊 **Статистика**\n\nПоказываю вашу статистику..."
+        "stats": "📊 **Статистика**\n\nПоказываю вашу статистику...",
+        "select_image_model": "🎨 **Выбор модели генерации**\n\nВыберите модель для генерации изображения:"
     }
     return prompts.get(mode, "")
+
+
+def create_image_model_selection_keyboard(access_level: str = "user") -> Dict[str, Any]:
+    """
+    Создаёт inline-клавиатуру для выбора модели генерации изображений.
+    
+    Args:
+        access_level: Уровень доступа (admin, subscriber, user)
+    
+    Returns:
+        JSON-структура клавиатуры для Telegram API
+    """
+    # Модели по уровням доступа - каждая кнопка в отдельном массиве (строка)
+    models_by_level = {
+        "admin": [
+            [{"text": "✨ Gemini 2.5 Flash", "callback_data": "img_gemini-flash"}],
+        ],
+        "subscriber": [
+            [{"text": "✨ Gemini 2.5 Flash", "callback_data": "img_gemini-flash"}],
+        ],
+        "user": [
+            [{"text": "✨ Gemini 2.5 Flash", "callback_data": "img_gemini-flash"}],
+        ]
+    }
+    
+    keyboard_models = models_by_level.get(access_level, models_by_level["user"])
+    
+    # Добавляем кнопку "Назад"
+    keyboard_models.append([{"text": "◀️ Назад к меню", "callback_data": "menu_back"}])
+    
+    keyboard = {
+        "inline_keyboard": keyboard_models,
+    }
+    return keyboard
