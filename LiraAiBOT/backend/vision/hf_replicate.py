@@ -7,6 +7,10 @@ import os
 from typing import Optional, Dict, Any
 from pathlib import Path
 from io import BytesIO
+from dotenv import load_dotenv
+
+# Загружаем .env файл
+load_dotenv()
 
 logger = logging.getLogger("bot.vision")
 

@@ -8,6 +8,10 @@ import os
 import time
 import aiohttp
 from typing import Optional
+from dotenv import load_dotenv
+
+# Загружаем .env файл
+load_dotenv()
 
 logger = logging.getLogger("bot.vision.replicate")
 
