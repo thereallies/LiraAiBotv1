@@ -39,9 +39,61 @@ if USE_SUPABASE and SUPABASE_URL and SUPABASE_KEY:
 if not USE_SUPABASE:
     logger.info("ℹ️ Используем SQLite базу данных")
 
-# Кэш пользователей в памяти (user_id -> данные)
+
+# ============================================
+# Функции управления кэшем
+# ============================================
+
+def _get_from_cache(cache: Dict, timestamps: Dict, key: str, default=None):
+    """Получает значение из кэша с проверкой TTL"""
+    import time
+    if key in cache:
+        if key in timestamps and (time.time() - timestamps[key]) < CACHE_TTL:
+            return cache[key]
+        else:
+            # Истекло TTL - удаляем
+            del cache[key]
+            if key in timestamps:
+                del timestamps[key]
+    return default
+
+
+def _save_to_cache(cache: Dict, timestamps: Dict, key: str, value):
+    """Сохраняет значение в кэш с timestamp"""
+    import time
+    cache[key] = value
+    timestamps[key] = time.time()
+
+
+def _invalidate_cache(cache: Dict, timestamps: Dict, key: str = None):
+    """Инвалидирует кэш (полностью или по ключу)"""
+    if key:
+        if key in cache:
+            del cache[key]
+        if key in timestamps:
+            del timestamps[key]
+    else:
+        cache.clear()
+        timestamps.clear()
+
+
+def invalidate_user_cache(user_id: str = None):
+    """Инвалидирует кэш пользователя"""
+    _invalidate_cache(_user_cache, _user_cache_timestamps, user_id)
+    _invalidate_cache(_limits_cache, _limits_cache_timestamps, user_id)
+    logger.info(f"🗑️ Кэш {'пользователя ' + user_id if user_id else 'полностью'} очищен")
+
+
+# ============================================
+# Кэш настроек бота (тех.режим и т.д.)
+# ============================================
 _user_cache: Dict[str, Dict] = {}
+_user_cache_timestamps: Dict[str, float] = {}
 _limits_cache: Dict[str, Dict] = {}
+_limits_cache_timestamps: Dict[str, float] = {}
+
+# TTL для кэша (5 минут)
+CACHE_TTL = 300  # секунд
 
 # Кэш настроек бота (тех.режим и т.д.)
 _bot_settings_cache: Dict[str, Any] = {
@@ -302,7 +354,13 @@ class BotDatabase:
         return False
 
     def get_user_stats(self, user_id: str) -> Optional[Dict[str, Any]]:
-        """Получает статистику пользователя"""
+        """Получает статистику пользователя (с кэшированием)"""
+        # Проверяем кэш с TTL
+        cached = _get_from_cache(_user_cache, _user_cache_timestamps, f"stats_{user_id}")
+        if cached:
+            logger.debug(f"🗄️ Статистика {user_id} из кэша")
+            return cached
+        
         if USE_SUPABASE and supabase:
             try:
                 # Информация о пользователе
@@ -310,16 +368,16 @@ class BotDatabase:
                 if not user_result.data:
                     return None
                 user_row = user_result.data[0]
-                
+
                 # Лимиты
                 limits_result = supabase.table("generation_limits").select("*").eq("user_id", user_id).execute()
                 limit_row = limits_result.data[0] if limits_result.data else None
-                
+
                 # Количество генераций за сегодня
                 today = datetime.now().date().isoformat()
                 history_result = supabase.table("generation_history").select("id", count="exact").eq("user_id", user_id).gte("created_at", today).execute()
-                
-                return {
+
+                stats = {
                     "user_id": user_row.get("user_id"),
                     "username": user_row.get("username"),
                     "first_name": user_row.get("first_name"),
@@ -329,10 +387,15 @@ class BotDatabase:
                     "last_seen": user_row.get("last_seen"),
                     "daily_count": limit_row.get("daily_count", 0) if limit_row else 0,
                     "total_count": limit_row.get("total_count", 0) if limit_row else 0,
-                    "today_generations": history_result.count
+                    "today_generations": history_result.count if hasattr(history_result, 'count') else 0
                 }
+                
+                # Кэшируем с TTL
+                _save_to_cache(_user_cache, _user_cache_timestamps, f"stats_{user_id}", stats)
+                return stats
             except Exception as e:
                 logger.error(f"❌ Ошибка Supabase в get_user_stats: {e}")
+                return None
         
         # SQLite версия
         conn = self._get_connection()
@@ -623,17 +686,20 @@ class BotDatabase:
                     total_count = total_count + 1,
                     last_reset = CURRENT_DATE
                 """).eq("user_id", user_id).execute()
-                
+
                 # Добавляем запись в историю
                 if prompt:
                     supabase.table("generation_history").insert({
                         "user_id": user_id,
                         "prompt": prompt
                     }).execute()
+                
+                # Инвалидируем кэш
+                invalidate_user_cache(user_id)
                 return
             except Exception as e:
                 logger.error(f"❌ Ошибка Supabase в increment_generation_count: {e}")
-        
+
         # SQLite версия
         conn = self._get_connection()
         cursor = conn.cursor()
@@ -654,6 +720,9 @@ class BotDatabase:
 
         conn.commit()
         conn.close()
+        
+        # Инвалидируем кэш
+        invalidate_user_cache(user_id)
 
     def get_all_users_count(self) -> int:
         """Получает общее количество пользователей"""
@@ -1185,6 +1254,100 @@ class BotDatabase:
                 conn.commit()
                 conn.close()
                 logger.info(f"💾 Сохранена модель для {user_id}: {model_key}")
+                return True
+            except sqlite3.OperationalError:
+                return False
+
+    # =========================================
+    # Настройки генерации изображений
+    # =========================================
+
+    def get_user_image_model(self, user_id: str) -> Optional[str]:
+        """
+        Получает выбранную модель генерации изображений из БД
+        """
+        if USE_SUPABASE and supabase:
+            try:
+                result = supabase.table("user_settings").select("image_model").eq("user_id", user_id).execute()
+
+                if result.data and len(result.data) > 0:
+                    model = result.data[0].get("image_model")
+                    if model:
+                        logger.info(f"💾 Загружена image_model из БД для {user_id}: {model}")
+                        return model
+
+                logger.info(f"💾 Нет image_model для {user_id}")
+                return None
+            except Exception as e:
+                logger.warning(f"⚠️ Ошибка загрузки image_model: {e}")
+                return None
+        else:
+            try:
+                conn = self._get_connection()
+                cursor = conn.cursor()
+                cursor.execute("SELECT image_model FROM user_settings WHERE user_id = ?", (user_id,))
+                row = cursor.fetchone()
+                conn.close()
+                if row and row[0]:
+                    return row[0]
+                return None
+            except sqlite3.OperationalError:
+                return None
+
+    def set_user_image_model(self, user_id: str, model_key: str) -> bool:
+        """
+        Сохраняет выбранную модель генерации изображений в БД
+        """
+        if USE_SUPABASE and supabase:
+            try:
+                result = supabase.table("user_settings").select("user_id").eq("user_id", user_id).execute()
+
+                if result.data and len(result.data) > 0:
+                    supabase.table("user_settings").update({
+                        "image_model": model_key,
+                        "updated_at": datetime.now().isoformat()
+                    }).eq("user_id", user_id).execute()
+                else:
+                    supabase.table("user_settings").insert({
+                        "user_id": user_id,
+                        "image_model": model_key,
+                        "selected_model": "groq-llama"  # Default text model
+                    }).execute()
+
+                logger.info(f"💾 Сохранена image_model для {user_id}: {model_key}")
+                
+                # Инвалидируем кэш
+                invalidate_user_cache(user_id)
+                return True
+            except Exception as e:
+                logger.error(f"❌ Ошибка сохранения image_model: {e}")
+                return False
+        else:
+            try:
+                conn = self._get_connection()
+                cursor = conn.cursor()
+
+                cursor.execute("SELECT user_id FROM user_settings WHERE user_id = ?", (user_id,))
+                exists = cursor.fetchone()
+
+                if exists:
+                    cursor.execute("""
+                        UPDATE user_settings
+                        SET image_model = ?, updated_at = CURRENT_TIMESTAMP
+                        WHERE user_id = ?
+                    """, (model_key, user_id))
+                else:
+                    cursor.execute("""
+                        INSERT INTO user_settings (user_id, image_model, selected_model)
+                        VALUES (?, ?, 'groq-llama')
+                    """, (user_id, model_key))
+
+                conn.commit()
+                conn.close()
+                logger.info(f"💾 Сохранена image_model для {user_id}: {model_key}")
+                
+                # Инвалидируем кэш
+                invalidate_user_cache(user_id)
                 return True
             except sqlite3.OperationalError:
                 return False

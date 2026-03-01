@@ -26,7 +26,8 @@ def create_main_menu_keyboard() -> Dict[str, Any]:
                 {"text": "📢 Подписаться"}
             ],
             [
-                {"text": "❓ Помощь"}
+                {"text": "❓ Помощь"},
+                {"text": "🔒 Политика конфиденциальности"}
             ],
             [
                 {"text": "⬇️ Скрыть клавиатуру"}
@@ -73,6 +74,7 @@ BOT_MODES = {
     "photo": "📸 Фото",
     "generation": "🎨 Генерация",
     "help": "❓ Помощь",
+    "privacy": "🔒 Политика конфиденциальности",
     "auto": "🤖 Авто",  # Автоматическое определение
     "select_model": "🤖 Выбрать модель",
     "hide": "⬇️ Скрыть клавиатуру",
@@ -197,18 +199,16 @@ def create_image_model_selection_keyboard(access_level: str = "user") -> Dict[st
     # Модели по уровням доступа - каждая кнопка в отдельном массиве (строка)
     models_by_level = {
         "admin": [
-            [{"text": "✨ Gemini 2.5 Flash", "callback_data": "img_gemini-flash"}],
-            [{"text": "🎨 FLUX.1 Dev (Replicate)", "callback_data": "img_hf-flux-dev"}],
-            [{"text": "🚀 FLUX.1 Pro (Replicate)", "callback_data": "img_hf-flux-pro"}],
+            # [{"text": "✨ Gemini 2.5 Flash", "callback_data": "img_gemini-flash"}],  # В разработке
+            [{"text": "🎨 Stable Diffusion 3", "callback_data": "img_hf-sd3-medium"}],
         ],
         "subscriber": [
-            [{"text": "✨ Gemini 2.5 Flash", "callback_data": "img_gemini-flash"}],
-            [{"text": "🎨 FLUX.1 Dev (Replicate)", "callback_data": "img_hf-flux-dev"}],
-            [{"text": "🚀 FLUX.1 Pro (Replicate)", "callback_data": "img_hf-flux-pro"}],
+            # [{"text": "✨ Gemini 2.5 Flash", "callback_data": "img_gemini-flash"}],  # В разработке
+            [{"text": "🎨 Stable Diffusion 3", "callback_data": "img_hf-sd3-medium"}],
         ],
         "user": [
-            [{"text": "✨ Gemini 2.5 Flash", "callback_data": "img_gemini-flash"}],
-            [{"text": "🎨 FLUX.1 Dev (Replicate)", "callback_data": "img_hf-flux-dev"}],
+            # [{"text": "✨ Gemini 2.5 Flash", "callback_data": "img_gemini-flash"}],  # В разработке
+            [{"text": "🎨 Stable Diffusion 3", "callback_data": "img_hf-sd3-medium"}],
         ]
     }
 

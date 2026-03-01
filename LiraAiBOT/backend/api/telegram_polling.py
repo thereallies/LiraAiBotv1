@@ -150,7 +150,7 @@ async def show_start_menu(chat_id: str):
 
 **Что я умею:**
 • 💬 Общаться на русском языке
-• 🎨 Генерировать изображения по описанию
+• 🎨 Генерировать изображения (Stable Diffusion 3)
 • 🎤 Распознавать голосовые сообщения
 • 📸 Анализировать фотографии
 
@@ -170,8 +170,9 @@ async def show_start_menu(chat_id: str):
 • Trinity Mini - мультимодальная
 • GLM-4.5 - полностью бесплатная
 
-🎨 **Gemini (генерация изображений):**
-• Gemini 2.5 Flash (5 запросов/мин, 250K токенов/мин)
+🎨 **Генерация изображений:**
+• Stable Diffusion 3 - работает ✅
+• Gemini Image - в разработке ⚠️
 
 **Обо мне:**
 У меня есть один разработчик - Danil Alekseevich.
@@ -466,6 +467,30 @@ async def process_message(message: Dict[str, Any], bot_token: str):
                             "🤖 **Выбор модели**\n\nВыберите модель для общения:\n\n🚀 Llama 3.3 - лучшая для русского\n🦙 Llama 4 - новейшая от Meta\n🔍 Scout - легкая и быстрая\n🌙 Kimi K2 - от Moonshot AI\n☀️ Solar - быстрая и качественная\n🔱 Trinity - мультимодальная\n🤖 GLM-4.5 - полностью бесплатная",
                             reply_markup=keyboard
                         )
+                        return
+
+                    # Обработка кнопки "Политика конфиденциальности"
+                    if mode == "privacy":
+                        privacy_url = "https://telegra.ph/Politika-konfidencialnosti-obshchij-dokument-03-01"
+                        privacy_text = f"""🔒 **Политика конфиденциальности**
+
+Мы заботимся о вашей конфиденциальности.
+
+📄 Полный текст политики конфиденциальности доступен по ссылке:
+{privacy_url}
+
+**Кратко:**
+• Мы храним только историю диалогов для улучшения качества общения
+• Ваши данные не передаются третьим лицам
+• Вы можете запросить удаление ваших данных через администратора
+
+Нажимая кнопку «🔒 Политика конфиденциальности», вы подтверждаете, что ознакомились с документом."""
+                        
+                        # Отправляем с кнопкой-ссылкой
+                        buttons = [
+                            [{"text": "📄 Открыть документ", "url": privacy_url}]
+                        ]
+                        await send_telegram_message_with_buttons(chat_id, privacy_text, buttons)
                         return
 
                     mode_manager.set_mode(user_id, mode)
@@ -1191,7 +1216,7 @@ async def process_message(message: Dict[str, Any], bot_token: str):
                         await send_telegram_message(chat_id, "❌ У вас нет прав администратора")
                         return
 
-                    # Парси�� user_id
+                    # ����арси�������������� user_id
                     parts = text.replace("/admin history ", "").strip().split()
                     target_user_id = parts[0] if parts else None
                     limit = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 20
@@ -1740,6 +1765,30 @@ async def handle_text_message(chat_id: str, user_id: str, text: str, is_group: b
         logger.info(f"📊 Пользователь {user_id} в режиме: {mode}")
 
         # Обработка в зависимости от режима
+        if mode == "privacy":
+            # Политика конфиденциальности
+            privacy_url = "https://telegra.ph/Politika-konfidencialnosti-obshchij-dokument-03-01"
+            privacy_text = f"""🔒 **Политика конфиденциальности**
+
+Мы заботимся о вашей конфиденциальности.
+
+📄 Полный текст политики конфиденциальности доступен по ссылке:
+{privacy_url}
+
+**Кратко:**
+• Мы храним только историю диалогов для улучшения качества общения
+• Ваши данные не передаются третьим лицам
+• Вы можете запросить удаление ваших данных через администратора
+
+Нажимая кнопку «🔒 Политика конфиденциальности», вы подтверждаете, что ознакомились с документом."""
+
+            # Отправляем с кнопкой-ссылкой
+            buttons = [
+                [{"text": "📄 Открыть документ", "url": privacy_url}]
+            ]
+            await send_telegram_message_with_buttons(chat_id, privacy_text, buttons)
+            return
+
         if mode == "help":
             # В режиме помощи показываем справку
             help_text = """ℹ️ **Помощь - LiraAI MultiAssistant**
@@ -1750,7 +1799,7 @@ async def handle_text_message(chat_id: str, user_id: str, text: str, is_group: b
 • /hide - Скрыть клавиатуру
 • /models - Выбор модели
 • /generate [описание] - Генерация изображения
-• /stats - Ваша статистика
+• /stats - Ваша статистистика
 
 **Возможности:**
 • 💬 Общение на русском языке
@@ -1812,16 +1861,26 @@ async def handle_text_message(chat_id: str, user_id: str, text: str, is_group: b
             return
 
         elif mode == "generation":
-            # В режиме генерации - показываем выбор модели
-            db = get_database()
-            user_access_level = db.get_user_access_level(user_id)
-            keyboard = create_image_model_selection_keyboard(user_access_level)
-            await send_telegram_message(
-                chat_id,
-                f"🎨 **Генерация изображений**\\n\\n📊 Твой уровень доступа: **{user_access_level}**\\n\\nВыберите модель для генерации:",
-                reply_markup=keyboard
-            )
-            return
+            # В режиме генерации - если есть текст, генерируем изображение
+            if text:
+                # Загружаем модель из БД
+                db = get_database()
+                model_key = db.get_user_image_model(user_id)
+                if model_key:
+                    logger.info(f"💾 Загружена image_model из БД для {user_id}: {model_key}")
+                await handle_image_generation(chat_id, user_id, text, model_key)
+                return
+            else:
+                # Если нет текста - показываем выбор модели
+                db = get_database()
+                user_access_level = db.get_user_access_level(user_id)
+                keyboard = create_image_model_selection_keyboard(user_access_level)
+                await send_telegram_message(
+                    chat_id,
+                    f"🎨 **Генерация изображений**\n\n📊 Твой уровень доступа: **{user_access_level}**\n\nВыберите модель для генерации:",
+                    reply_markup=keyboard
+                )
+                return
         # Получаем модель пользователя
         model_key = user_models.get(user_id, "groq-llama")
         model_info = AVAILABLE_MODELS.get(model_key, ("groq", "llama-3.3-70b-versatile"))
@@ -1973,7 +2032,11 @@ async def handle_image_generation(chat_id: str, user_id: str, prompt: str, model
 
         # Получаем модель пользователя (или используем переданную)
         if not model_key:
-            model_key = user_image_models.get(user_id)
+            # Загружаем из БД
+            db = get_database()
+            model_key = db.get_user_image_model(user_id)
+            if model_key:
+                logger.info(f"💾 Загружена image_model из БД для {user_id}: {model_key}")
 
         # Определяем тип модели (Gemini или HF+Replicate)
         is_hf_model = model_key and model_key.startswith("hf-")
@@ -2021,31 +2084,22 @@ async def handle_image_generation(chat_id: str, user_id: str, prompt: str, model
             f"Всего использовано: {limit_info['total_count']}\n\n"
             f"Подождите немного, это займет 10-30 секунд."
         )
+        
+        logger.info(f"🔍 Отладка 2: после send_telegram_message")
 
-        # Переводим промпт на английский
-        translated = prompt
-        try:
-            translate_prompt = f"Translate to English ONLY, no other text: '{prompt}'"
-            translated = await llm_client.chat_completion(
-                user_message=translate_prompt,
-                system_prompt="Translate image descriptions to English. Return ONLY the translation.",
-                model="upstage/solar-pro-3:free",
-                max_tokens=100,
-                temperature=0.1
-            )
-            translated = translated.strip().strip('"\'').strip()
-            if not translated or len(translated) < 3:
-                translated = prompt
-        except:
-            pass
+        # Используем оригинальный промпт (HF API понимает русский)
+        enhanced_prompt = f"{prompt}, high quality, detailed, artistic, 8k, masterpiece"
+        
+        logger.info(f"🔍 Отладка 3: промпт={enhanced_prompt[:80]}")
 
-        enhanced_prompt = f"{translated}, high quality, detailed, artistic, 8k, masterpiece"
-
-        # Генерация через HF+Replicate или Gemini
+        # Генерация через HF
         image_data = None
         
+        # Логирование для отладки
+        logger.info(f"🔍 Отладка: model_key={model_key}, is_hf_model={is_hf_model}, hf_api_key={'✅' if hf_replicate_client.api_key else '❌'}")
+
         if is_hf_model and hf_replicate_client.api_key:
-            # Генерация через HF+Replicate
+            # Генерация через HF (Stable Diffusion 3)
             try:
                 image_data = await hf_replicate_client.generate_image(
                     prompt=enhanced_prompt,
@@ -2054,26 +2108,22 @@ async def handle_image_generation(chat_id: str, user_id: str, prompt: str, model
                 )
 
                 if image_data and len(image_data) > 10000:
-                    logger.info(f"✅ HF+Replicate успешно: {len(image_data)} байт")
+                    logger.info(f"✅ HF успешно: {len(image_data)} байт")
             except Exception as e:
-                logger.error(f"❌ Ошибка HF+Replicate: {e}", exc_info=True)
-                await send_telegram_message(chat_id, f"⚠️ HF+Replicate ошибка, пробуем Gemini...")
-        
-        # Если HF+Replicate не сработал или не настроен - пробуем Gemini
-        if not image_data and gemini_image_client.api_key:
-            try:
-                image_data = await gemini_image_client.generate_image(
-                    prompt=enhanced_prompt,
-                    model_key=model_key if not is_hf_model else "gemini-flash",
-                    timeout=90
-                )
+                logger.error(f"❌ Ошибка HF: {e}", exc_info=True)
 
-                if image_data and len(image_data) > 10000:
-                    logger.info(f"✅ Gemini Image успешно: {len(image_data)} байт")
-            except Exception as e:
-                logger.error(f"❌ Ошибка Gemini Image: {e}", exc_info=True)
-                if not is_hf_model:
-                    await send_telegram_message(chat_id, f"⚠️ Gemini ошибка, пробую Pollinations...")
+        # Gemini - в разработке
+        # if not image_data and gemini_image_client.api_key:
+        #     try:
+        #         image_data = await gemini_image_client.generate_image(
+        #             prompt=enhanced_prompt,
+        #             model_key=model_key if not is_hf_model else "gemini-flash",
+        #             timeout=90
+        #         )
+        #         if image_data and len(image_data) > 10000:
+        #             logger.info(f"✅ Gemini Image успешно: {len(image_data)} байт")
+        #     except Exception as e:
+        #         logger.error(f"❌ Ошибка Gemini Image: {e}", exc_info=True)
 
         # Если изображение получено - отправляем пользователю
         if image_data and len(image_data) > 10000:
@@ -2096,60 +2146,16 @@ async def handle_image_generation(chat_id: str, user_id: str, prompt: str, model
                 pass
             return
 
-        # Если Gemini/HF не сработал - пробуем Pollinations fallback
-        try:
-            logger.info(f"🎨 Пробуем Pollinations fallback для: {prompt[:50]}")
-
-            # Очищаем промпт для URL
-            prompt_clean = re.sub(r'[^\w\s-]', '', translated).strip().replace(' ', '_')[:100]
-            if not prompt_clean:
-                prompt_clean = "beautiful_image"
-
-            url = f"https://pollinations.ai/p/{prompt_clean}"
-
-            async with aiohttp.ClientSession() as session:
-                async with session.get(url, timeout=aiohttp.ClientTimeout(total=60)) as response:
-                    if response.status == 200:
-                        image_data = await response.read()
-
-                        if len(image_data) > 10000:
-                            logger.info(f"✅ Pollinations успешно: {len(image_data)} байт")
-
-                            image_path = temp_dir / f"generated_{user_id}_{os.getpid()}.png"
-                            with open(image_path, "wb") as f:
-                                f.write(image_data)
-
-                            await send_telegram_photo(
-                                chat_id,
-                                str(image_path),
-                                caption=f"🎨 {prompt}\n\n🌸 Pollinations.ai (fallback)"
-                            )
-
-                            db.increment_generation_count(user_id, prompt)
-
-                            try:
-                                os.remove(image_path)
-                            except:
-                                pass
-                            return
-                        else:
-                            logger.warning(f"⚠️ Pollinations вернул слишком маленький файл: {len(image_data)} байт")
-                    else:
-                        error_text = await response.text()
-                        logger.warning(f"⚠️ Pollinations ошибка {response.status}: {error_text[:200]}")
-
-        except Exception as e:
-            logger.error(f"❌ Ошибка Pollinations fallback: {e}")
-
         # Если всё не сработало
         await send_telegram_message(
             chat_id,
             "❌ Не удалось сгенерировать изображение.\n\n"
             "Возможные причины:\n"
-            "• Gemini/HF+Replicate недоступны\n"
-            "• Pollinations временно недоступен\n"
-            "• Ошибка в описании\n\n"
-            "Попробуйте позже или другое описание."
+            "• HF+Replicate: проверьте токен Hugging Face\n"
+            "• Gemini: недоступен в вашем регионе\n\n"
+            "Попробуйте:\n"
+            "1. Другую модель (/start → Генерация → Выбор модели)\n"
+            "2. Позже"
         )
 
     except Exception as e:
@@ -2280,8 +2286,9 @@ async def start_polling_for_bot(token: str, bot_name: str = "Bot"):
                             )
                             return
 
-                        # Сохраняем выбор модели
-                        user_image_models[callback_user_id] = model_key
+                        # Сохраняем выбор модели в БД
+                        db = get_database()
+                        db.set_user_image_model(callback_user_id, model_key)
 
                         model_name = available_models[model_key]["description"]
                         provider_name = "FLUX (Replicate)" if is_hf_model else "Gemini"
@@ -2373,18 +2380,18 @@ async def start_polling_for_bot(token: str, bot_name: str = "Bot"):
 **Команды:**
 • /start - Главное меню
 • /menu - Показать клавиатуру
-• /hide - Скрыть клавиатуру
+• /hide - Скрыть кла��иатуру
 • /models - Выбор модели
 • /generate [описание] - Генерация изображения
 • /stats - Ваша статистика
 
 **Возможности:**
-• 💬 Общение на русском языке
+• 💬 Общение на русском язы��е
 • 🎨 Генерация изображений
-• 🎤 Распознавание голоса
-• 📸 Анализ фотографий
+• 🎤 Распознавание го��оса
+• 📸 Анал��з фотографий
 
-Бот запоминает последние 10 сообщений!"""
+Бот запоминает п��следние 10 сообщений!"""
                         await send_telegram_message(callback_chat_id, help_text)
                         continue
 
@@ -2425,7 +2432,7 @@ async def start_polling_for_bot(token: str, bot_name: str = "Bot"):
                             if stats:
                                 level_info = {
                                     "admin": "👑 Администратор (безлимит)",
-                                    "subscriber": "⭐ Подписчик (5 в день)",
+                                    "subscriber": "⭐ Подписчик (5 �� день)",
                                     "user": "👤 Пользователь (3 в день)"
                                 }
                                 level = stats.get('access_level', 'user')

@@ -40,7 +40,6 @@ import uvicorn
 
 # Импорты API
 from api import routes
-from api.telegram_polling import start_telegram_polling
 
 # Настройка логирования
 os.makedirs('logs', exist_ok=True)
@@ -57,6 +56,9 @@ logging.basicConfig(
 )
 
 logger = logging.getLogger("bot.main")
+
+# Импортируем telegram_polling ПОСЛЕ настройки логирования
+from api.telegram_polling import start_telegram_polling
 
 # Создание FastAPI приложения
 app = FastAPI(

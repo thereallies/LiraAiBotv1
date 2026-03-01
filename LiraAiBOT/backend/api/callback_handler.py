@@ -148,14 +148,16 @@ async def handle_callback(
             ]
         ]
         
-        welcome_text = """👋 **LiraAI MultiAssistent**
+        welcome_text = """👋 **LiraAI MultiAssistant**
 
 💬 Общение
-🎨 Генерация фото
+🎨 Генерация фото (Stable Diffusion 3)
 🎤 Голосовые
 📸 Анализ фото
 
-🆓 Все модели БЕСПЛАТНЫЕ!"""
+🆓 Все модели БЕСПЛАТНЫЕ!
+
+⚠️ Gemini Image - в разработке"""
         
         await edit_message_text(
             callback_chat_id,
