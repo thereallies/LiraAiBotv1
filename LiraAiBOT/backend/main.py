@@ -12,7 +12,32 @@ from dotenv import load_dotenv
 # Загружаем переменные окружения
 load_dotenv()
 
-# Устанавливаем supabase если не установлен (для bothost.ru)
+# ============================================
+# Автоматическая установка зависимостей
+# Для bothost.ru и других серверов
+# ============================================
+
+def install_requirements():
+    """Устанавливает зависимости из requirements.txt"""
+    req_path = Path(__file__).parent.parent / "requirements.txt"
+    if req_path.exists():
+        print(f"📦 Проверка зависимостей из {req_path}...")
+        try:
+            subprocess.check_call([
+                sys.executable, "-m", "pip", "install", "-r", str(req_path), "-q", "--upgrade"
+            ])
+            print("✅ Все зависимости установлены!")
+        except subprocess.CalledProcessError as e:
+            print(f"⚠️ Ошибка установки зависимостей: {e}")
+            print("⚠️ Продолжаю работу с доступными пакетами...")
+    else:
+        print(f"⚠️ requirements.txt не найден: {req_path}")
+
+# Устанавливаем зависимости если не запущены в режиме разработки
+if not os.environ.get("DEV_MODE", "false").lower() == "true":
+    install_requirements()
+
+# Устанавливаем критичные пакеты если не установлены
 try:
     import supabase
 except ImportError:
@@ -20,13 +45,40 @@ except ImportError:
     subprocess.check_call([sys.executable, "-m", "pip", "install", "supabase", "-q"])
     print("✅ supabase установлен!")
 
-# Устанавливаем google-genai если не установлен (для Gemini Image Generation)
 try:
     from google import genai
 except ImportError:
     print("⚠️ Устанавливаю google-genai...")
     subprocess.check_call([sys.executable, "-m", "pip", "install", "google-genai>=1.0.0", "-q"])
     print("✅ google-genai установлен!")
+
+try:
+    import telethon
+except ImportError:
+    print("⚠️ Устанавливаю telethon...")
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "telethon", "-q"])
+    print("✅ telethon установлен!")
+
+try:
+    import huggingface_hub
+except ImportError:
+    print("⚠️ Устанавливаю huggingface_hub...")
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "huggingface_hub", "-q"])
+    print("✅ huggingface_hub установлен!")
+
+# Проверяем ffmpeg для обработки голоса
+def check_ffmpeg():
+    """Проверяет наличие ffmpeg в системе"""
+    try:
+        subprocess.run(["ffmpeg", "-version"], capture_output=True, check=True)
+        print("✅ ffmpeg найден")
+        return True
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        print("⚠️ ffmpeg не найден! Голосовые функции могут не работать.")
+        print("⚠️ Для установки выполните: sudo apt-get install ffmpeg")
+        return False
+
+check_ffmpeg()
 
 # Добавляем путь к корню проекта в sys.path для правильных импортов
 project_root = Path(__file__).parent.parent
