@@ -20,7 +20,7 @@ class GroqClient:
         
         # Параметры по умолчанию
         self.default_model = "meta-llama/llama-3.3-70b-versatile"
-        self.max_tokens = 256
+        self.max_tokens = 2048
         self.temperature = 0.7
 
         if self.api_key:

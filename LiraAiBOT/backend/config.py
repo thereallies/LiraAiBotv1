@@ -142,7 +142,7 @@ LLM_CONFIG = {
     "model": "upstage/solar-pro-3:free",  # Бесплатная Solar Pro 3
     "fallback_model": "arcee-ai/trinity-mini:free",  # Бесплатная Trinity Mini
     "temperature": 0.7,
-    "max_tokens": 256,  # Уменьшено для работы с бесплатными кредитами
+    "max_tokens": 2048,  # Увеличено для полных ответов
 }
 
 # Настройки эмбеддингов

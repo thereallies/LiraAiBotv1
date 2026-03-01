@@ -25,7 +25,7 @@ class CerebrasClient:
 
         # Параметры по умолчанию
         self.default_model = "llama3.1-8b"
-        self.max_tokens = 256
+        self.max_tokens = 2048
         self.temperature = 0.7
 
         if self.api_key:

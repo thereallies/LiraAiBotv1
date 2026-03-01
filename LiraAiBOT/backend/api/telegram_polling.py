@@ -27,6 +27,7 @@ from backend.llm.openrouter import OpenRouterClient
 from backend.llm.groq import get_groq_client
 from backend.llm.cerebras import get_cerebras_client
 from backend.vision.gemini_image import get_gemini_image_client
+from backend.vision.hf_replicate import get_hf_replicate_client
 from backend.utils.keyboards import (
     create_main_menu_keyboard,
     create_hide_keyboard,
@@ -64,6 +65,9 @@ cerebras_client = get_cerebras_client()
 
 # Создаем Gemini Image клиент для генерации изображений
 gemini_image_client = get_gemini_image_client()
+
+# Создаем HF+Replicate клиент для генерации изображений через FLUX
+hf_replicate_client = get_hf_replicate_client()
 
 # Инициализируем FeedbackBotHandler если включен
 feedback_bot_handler = None
@@ -1187,7 +1191,7 @@ async def process_message(message: Dict[str, Any], bot_token: str):
                         await send_telegram_message(chat_id, "❌ У вас нет прав администратора")
                         return
 
-                    # Парсим user_id
+                    # Парси�� user_id
                     parts = text.replace("/admin history ", "").strip().split()
                     target_user_id = parts[0] if parts else None
                     limit = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 20
@@ -1940,7 +1944,7 @@ async def handle_text_message(chat_id: str, user_id: str, text: str, is_group: b
 
 
 async def handle_image_generation(chat_id: str, user_id: str, prompt: str, model_key: str = None):
-    """Обрабатывает запрос на генерацию изображения через Gemini с проверкой лимитов и уровней доступа"""
+    """Обрабатывает запрос на генерацию изображения через Gemini/HF+Replicate с проверкой лимитов и уровней доступа"""
     from backend.database.users_db import get_database
     import os
 
@@ -1950,10 +1954,10 @@ async def handle_image_generation(chat_id: str, user_id: str, prompt: str, model
         # Проверяем лимиты и уровень доступа
         db = get_database()
         db.add_or_update_user(user_id)
-        
+
         # Получаем уровень доступа
         access_level = db.get_user_access_level(user_id)
-        
+
         # Проверяем лимиты
         limit_info = db.check_generation_limit(user_id)
 
@@ -1970,13 +1974,35 @@ async def handle_image_generation(chat_id: str, user_id: str, prompt: str, model
         # Получаем модель пользователя (или используем переданную)
         if not model_key:
             model_key = user_image_models.get(user_id)
+
+        # Определяем тип модели (Gemini или HF+Replicate)
+        is_hf_model = model_key and model_key.startswith("hf-")
         
         # Проверяем доступность модели для уровня доступа
-        available_models = gemini_image_client.get_models_for_user(access_level)
-        
+        if is_hf_model:
+            available_models = hf_replicate_client.get_models_for_user(access_level)
+        else:
+            available_models = gemini_image_client.get_models_for_user(access_level)
+
         if not model_key or model_key not in available_models:
-            model_key = list(available_models.keys())[0] if available_models else "imagen-4.0-generate"
-        
+            # Пробуем получить модель из HF+Replicate сначала, потом Gemini
+            if hf_replicate_client.api_key:
+                hf_models = hf_replicate_client.get_models_for_user(access_level)
+                if hf_models:
+                    model_key = list(hf_models.keys())[0]
+                    is_hf_model = True
+                    available_models = hf_models
+            else:
+                gemini_models = gemini_image_client.get_models_for_user(access_level)
+                if gemini_models:
+                    model_key = list(gemini_models.keys())[0]
+                    is_hf_model = False
+                    available_models = gemini_models
+                else:
+                    model_key = "hf-flux-dev"  # Default fallback
+                    is_hf_model = True
+                    available_models = hf_replicate_client.get_models_for_user(access_level)
+
         model_info = available_models.get(model_key, {})
         model_name = model_info.get("description", model_key)
 
@@ -2015,53 +2041,115 @@ async def handle_image_generation(chat_id: str, user_id: str, prompt: str, model
 
         enhanced_prompt = f"{translated}, high quality, detailed, artistic, 8k, masterpiece"
 
-        # Генерация через Gemini Image API
-        try:
-            image_data = await gemini_image_client.generate_image(
-                prompt=enhanced_prompt,
-                model_key=model_key,
-                timeout=90
-            )
-
-            if image_data and len(image_data) > 10000:
-                logger.info(f"✅ Gemini Image успешно: {len(image_data)} байт")
-
-                image_path = temp_dir / f"generated_{os.getpid()}.png"
-                with open(image_path, "wb") as f:
-                    f.write(image_data)
-
-                await send_telegram_photo(
-                    chat_id, 
-                    str(image_path), 
-                    caption=f"🎨 {prompt}\n\n📊 Модель: {model_name}\n👤 Уровень: {access_level}"
+        # Генерация через HF+Replicate или Gemini
+        image_data = None
+        
+        if is_hf_model and hf_replicate_client.api_key:
+            # Генерация через HF+Replicate
+            try:
+                image_data = await hf_replicate_client.generate_image(
+                    prompt=enhanced_prompt,
+                    model_key=model_key,
+                    timeout=90
                 )
 
-                db.increment_generation_count(user_id, prompt)
+                if image_data and len(image_data) > 10000:
+                    logger.info(f"✅ HF+Replicate успешно: {len(image_data)} байт")
+            except Exception as e:
+                logger.error(f"❌ Ошибка HF+Replicate: {e}", exc_info=True)
+                await send_telegram_message(chat_id, f"⚠️ HF+Replicate ошибка, пробуем Gemini...")
+        
+        # Если HF+Replicate не сработал или не настроен - пробуем Gemini
+        if not image_data and gemini_image_client.api_key:
+            try:
+                image_data = await gemini_image_client.generate_image(
+                    prompt=enhanced_prompt,
+                    model_key=model_key if not is_hf_model else "gemini-flash",
+                    timeout=90
+                )
 
-                try:
-                    os.remove(image_path)
-                except:
-                    pass
-                return
+                if image_data and len(image_data) > 10000:
+                    logger.info(f"✅ Gemini Image успешно: {len(image_data)} байт")
+            except Exception as e:
+                logger.error(f"❌ Ошибка Gemini Image: {e}", exc_info=True)
+                if not is_hf_model:
+                    await send_telegram_message(chat_id, f"⚠️ Gemini ошибка, пробую Pollinations...")
 
-        except Exception as e:
-            logger.error(f"❌ Ошибка Gemini Image: {e}", exc_info=True)
-            await send_telegram_message(
-                chat_id, 
-                f"❌ Ошибка генерации через Gemini:\n{str(e)[:200]}\n\n"
-                "Проверьте GEMINI_API_KEY или попробуйте другое описание."
+        # Если изображение получено - отправляем пользователю
+        if image_data and len(image_data) > 10000:
+            image_path = temp_dir / f"generated_{os.getpid()}.png"
+            with open(image_path, "wb") as f:
+                f.write(image_data)
+
+            provider_name = "FLUX" if is_hf_model else "Gemini"
+            await send_telegram_photo(
+                chat_id,
+                str(image_path),
+                caption=f"🎨 {prompt}\n\n📊 Модель: {model_name}\n👤 Уровень: {access_level}\n🤖 {provider_name}"
             )
+
+            db.increment_generation_count(user_id, prompt)
+
+            try:
+                os.remove(image_path)
+            except:
+                pass
             return
 
-        # Если изображение не получено
+        # Если Gemini/HF не сработал - пробуем Pollinations fallback
+        try:
+            logger.info(f"🎨 Пробуем Pollinations fallback для: {prompt[:50]}")
+
+            # Очищаем промпт для URL
+            prompt_clean = re.sub(r'[^\w\s-]', '', translated).strip().replace(' ', '_')[:100]
+            if not prompt_clean:
+                prompt_clean = "beautiful_image"
+
+            url = f"https://pollinations.ai/p/{prompt_clean}"
+
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, timeout=aiohttp.ClientTimeout(total=60)) as response:
+                    if response.status == 200:
+                        image_data = await response.read()
+
+                        if len(image_data) > 10000:
+                            logger.info(f"✅ Pollinations успешно: {len(image_data)} байт")
+
+                            image_path = temp_dir / f"generated_{user_id}_{os.getpid()}.png"
+                            with open(image_path, "wb") as f:
+                                f.write(image_data)
+
+                            await send_telegram_photo(
+                                chat_id,
+                                str(image_path),
+                                caption=f"🎨 {prompt}\n\n🌸 Pollinations.ai (fallback)"
+                            )
+
+                            db.increment_generation_count(user_id, prompt)
+
+                            try:
+                                os.remove(image_path)
+                            except:
+                                pass
+                            return
+                        else:
+                            logger.warning(f"⚠️ Pollinations вернул слишком маленький файл: {len(image_data)} байт")
+                    else:
+                        error_text = await response.text()
+                        logger.warning(f"⚠️ Pollinations ошибка {response.status}: {error_text[:200]}")
+
+        except Exception as e:
+            logger.error(f"❌ Ошибка Pollinations fallback: {e}")
+
+        # Если всё не сработало
         await send_telegram_message(
-            chat_id, 
+            chat_id,
             "❌ Не удалось сгенерировать изображение.\n\n"
             "Возможные причины:\n"
-            "• Неверный GEMINI_API_KEY\n"
-            "• Выбранная модель недоступна\n"
+            "• Gemini/HF+Replicate недоступны\n"
+            "• Pollinations временно недоступен\n"
             "• Ошибка в описании\n\n"
-            "Попробуйте другую модель или описание."
+            "Попробуйте позже или другое описание."
         )
 
     except Exception as e:
@@ -2169,37 +2257,45 @@ async def start_polling_for_bot(token: str, bot_name: str = "Bot"):
                     # Обработка выбора модели генерации изображений (img_*)
                     elif callback_data.startswith("img_"):
                         from backend.api.telegram_core import answer_callback_query, edit_message_text, send_telegram_message
-                        
+
                         model_key = callback_data.replace("img_", "")
-                        
+
                         # Получаем уровень доступа пользователя
                         db = get_database()
                         user_access_level = db.get_user_access_level(callback_user_id)
+
+                        # Определяем тип модели (Gemini или HF+Replicate)
+                        is_hf_model = model_key.startswith("hf-")
                         
                         # Проверяем доступность модели для уровня доступа
-                        available_models = gemini_image_client.get_models_for_user(user_access_level)
-                        
+                        if is_hf_model:
+                            available_models = hf_replicate_client.get_models_for_user(user_access_level)
+                        else:
+                            available_models = gemini_image_client.get_models_for_user(user_access_level)
+
                         if model_key not in available_models:
                             await answer_callback_query(
                                 callback_query["id"],
                                 "❌ Эта модель недоступна для вашего уровня доступа!"
                             )
                             return
-                        
+
                         # Сохраняем выбор модели
                         user_image_models[callback_user_id] = model_key
-                        
+
                         model_name = available_models[model_key]["description"]
-                        
+                        provider_name = "FLUX (Replicate)" if is_hf_model else "Gemini"
+
                         await answer_callback_query(
                             callback_query["id"],
                             f"✅ Модель генерации выбрана: {model_name}!"
                         )
-                        
+
                         # Открываем меню генерации
                         await send_telegram_message(
                             callback_chat_id,
                             f"✅ **Модель генерации выбрана:** {model_name}\n\n"
+                            f"🤖 Провайдер: {provider_name}\n"
                             f"Теперь отправьте описание изображения, которое хотите создать!\n\n"
                             f"📊 Ваш уровень доступа: {user_access_level}"
                         )
@@ -2304,7 +2400,7 @@ async def start_polling_for_bot(token: str, bot_name: str = "Bot"):
                             keyboard = create_model_selection_keyboard()
                             await send_telegram_message(
                                 callback_chat_id,
-                                "🤖 **Выбор модели**\n\nВыберите модель для общения:",
+                                "🤖 **Выбор модели**\n\nВыберите модель для общени��:",
                                 reply_markup=keyboard
                             )
                         elif callback_data == "menu_photo":

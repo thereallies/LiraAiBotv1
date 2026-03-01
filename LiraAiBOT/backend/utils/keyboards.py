@@ -187,10 +187,10 @@ def get_mode_prompt(mode: str) -> str:
 def create_image_model_selection_keyboard(access_level: str = "user") -> Dict[str, Any]:
     """
     Создаёт inline-клавиатуру для выбора модели генерации изображений.
-    
+
     Args:
         access_level: Уровень доступа (admin, subscriber, user)
-    
+
     Returns:
         JSON-структура клавиатуры для Telegram API
     """
@@ -198,20 +198,25 @@ def create_image_model_selection_keyboard(access_level: str = "user") -> Dict[st
     models_by_level = {
         "admin": [
             [{"text": "✨ Gemini 2.5 Flash", "callback_data": "img_gemini-flash"}],
+            [{"text": "🎨 FLUX.1 Dev (Replicate)", "callback_data": "img_hf-flux-dev"}],
+            [{"text": "🚀 FLUX.1 Pro (Replicate)", "callback_data": "img_hf-flux-pro"}],
         ],
         "subscriber": [
             [{"text": "✨ Gemini 2.5 Flash", "callback_data": "img_gemini-flash"}],
+            [{"text": "🎨 FLUX.1 Dev (Replicate)", "callback_data": "img_hf-flux-dev"}],
+            [{"text": "🚀 FLUX.1 Pro (Replicate)", "callback_data": "img_hf-flux-pro"}],
         ],
         "user": [
             [{"text": "✨ Gemini 2.5 Flash", "callback_data": "img_gemini-flash"}],
+            [{"text": "🎨 FLUX.1 Dev (Replicate)", "callback_data": "img_hf-flux-dev"}],
         ]
     }
-    
+
     keyboard_models = models_by_level.get(access_level, models_by_level["user"])
-    
+
     # Добавляем кнопку "Назад"
     keyboard_models.append([{"text": "◀️ Назад к меню", "callback_data": "menu_back"}])
-    
+
     keyboard = {
         "inline_keyboard": keyboard_models,
     }
