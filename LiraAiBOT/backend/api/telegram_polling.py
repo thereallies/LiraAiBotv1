@@ -2138,7 +2138,10 @@ async def handle_image_generation(chat_id: str, user_id: str, prompt: str, model
                 caption=f"🎨 {prompt}\n\n📊 Модель: {model_name}\n👤 Уровень: {access_level}\n🤖 {provider_name}"
             )
 
+            # Увеличиваем счетчик генераций
+            db = get_database()
             db.increment_generation_count(user_id, prompt)
+            logger.info(f"📊 Счетчик генераций увеличен для {user_id}")
 
             try:
                 os.remove(image_path)

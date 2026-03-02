@@ -354,13 +354,14 @@ class BotDatabase:
         return False
 
     def get_user_stats(self, user_id: str) -> Optional[Dict[str, Any]]:
-        """Получает статистику пользователя (с кэшированием)"""
-        # Проверяем кэш с TTL
-        cached = _get_from_cache(_user_cache, _user_cache_timestamps, f"stats_{user_id}")
-        if cached:
-            logger.debug(f"🗄️ Статистика {user_id} из кэша")
-            return cached
-        
+        """Получает статистику пользователя (всегда свежие данные)"""
+        # ❌ ОТКЛЮЧЕНО: Кэш для статистики - показывает устаревшие данные
+        # cached = _get_from_cache(_user_cache, _user_cache_timestamps, f"stats_{user_id}")
+        # if cached:
+        #     logger.debug(f"🗄️ Статистика {user_id} из кэша")
+        #     return cached
+
+        # Всегда читаем свежие данные из БД
         if USE_SUPABASE and supabase:
             try:
                 # Информация о пользователе
@@ -373,9 +374,16 @@ class BotDatabase:
                 limits_result = supabase.table("generation_limits").select("*").eq("user_id", user_id).execute()
                 limit_row = limits_result.data[0] if limits_result.data else None
 
-                # Количество генераций за сегодня
-                today = datetime.now().date().isoformat()
-                history_result = supabase.table("generation_history").select("id", count="exact").eq("user_id", user_id).gte("created_at", today).execute()
+                # Количество генераций за сегодня - берём из daily_count (он обновляется при генерации)
+                # generation_history используем только как fallback
+                today_generations = limit_row.get("daily_count", 0) if limit_row else 0
+                
+                # Fallback: если daily_count = 0, считаем из истории
+                if today_generations == 0:
+                    today = datetime.now().date().isoformat()
+                    history_result = supabase.table("generation_history").select("id").eq("user_id", user_id).gte("created_at", today).execute()
+                    if history_result.data:
+                        today_generations = len(history_result.data)
 
                 stats = {
                     "user_id": user_row.get("user_id"),
@@ -387,11 +395,11 @@ class BotDatabase:
                     "last_seen": user_row.get("last_seen"),
                     "daily_count": limit_row.get("daily_count", 0) if limit_row else 0,
                     "total_count": limit_row.get("total_count", 0) if limit_row else 0,
-                    "today_generations": history_result.count if hasattr(history_result, 'count') else 0
+                    "today_generations": today_generations
                 }
-                
-                # Кэшируем с TTL
-                _save_to_cache(_user_cache, _user_cache_timestamps, f"stats_{user_id}", stats)
+
+                # ❌ ОТКЛЮЧЕНО: Не кэшируем статистику
+                # _save_to_cache(_user_cache, _user_cache_timestamps, f"stats_{user_id}", stats)
                 return stats
             except Exception as e:
                 logger.error(f"❌ Ошибка Supabase в get_user_stats: {e}")
@@ -581,18 +589,30 @@ class BotDatabase:
                 limit_row = limits_result.data[0]
                 daily_count = limit_row.get("daily_count", 0)
                 daily_limit = ACCESS_LEVELS.get(access_level, {}).get("daily_limit", 3)
-                
+
                 # Проверяем нужно ли сбросить счетчик
                 today = datetime.now().date()
                 last_reset_str = limit_row.get("last_reset", str(today))
-                last_reset_date = datetime.strptime(last_reset_str, "%Y-%m-%d").date() if last_reset_str else today
                 
+                # Обработка разных форматов даты из Supabase
+                try:
+                    if 'T' in last_reset_str:
+                        # ISO формат с временем
+                        last_reset_date = datetime.fromisoformat(last_reset_str.replace('Z', '+00:00')).date()
+                    else:
+                        # Просто дата
+                        last_reset_date = datetime.strptime(last_reset_str, "%Y-%m-%d").date() if last_reset_str else today
+                except (ValueError, TypeError):
+                    last_reset_date = today
+
                 if last_reset_date < today:
                     self._reset_daily_limit(user_id)
                     daily_count = 0
-                
+
                 allowed = daily_limit == -1 or daily_count < daily_limit
                 
+                logger.info(f"📊 Проверка лимита {user_id}: daily_count={daily_count}, daily_limit={daily_limit}, allowed={allowed}")
+
                 return {
                     "allowed": allowed,
                     "daily_count": daily_count,
@@ -603,8 +623,17 @@ class BotDatabase:
                 }
             except Exception as e:
                 logger.error(f"❌ Ошибка Supabase в check_generation_limit: {e}")
-        
-        # SQLite версия
+                # Возвращаем default чтобы не блокировать пользователя
+                return {
+                    "allowed": True,
+                    "daily_count": 0,
+                    "daily_limit": 3,
+                    "total_count": 0,
+                    "reset_time": "сегодня",
+                    "access_level": "user"
+                }
+
+        # SQLite версия (fallback)
         conn = self._get_connection()
         cursor = conn.cursor()
 
@@ -680,12 +709,24 @@ class BotDatabase:
         """Увеличивает счетчик генераций"""
         if USE_SUPABASE and supabase:
             try:
-                # Увеличиваем счетчики
-                supabase.table("generation_limits").update("""
-                    daily_count = daily_count + 1,
-                    total_count = total_count + 1,
-                    last_reset = CURRENT_DATE
-                """).eq("user_id", user_id).execute()
+                # Проверяем есть ли запись
+                check = supabase.table("generation_limits").select("user_id").eq("user_id", user_id).execute()
+                
+                if not check.data or len(check.data) == 0:
+                    # Создаём запись
+                    supabase.table("generation_limits").insert({
+                        "user_id": user_id,
+                        "daily_count": 1,
+                        "total_count": 1,
+                        "last_reset": datetime.now().date().isoformat()
+                    }).execute()
+                else:
+                    # Увеличиваем счетчики
+                    supabase.table("generation_limits").update("""
+                        daily_count = daily_count + 1,
+                        total_count = total_count + 1,
+                        last_reset = CURRENT_DATE
+                    """).eq("user_id", user_id).execute()
 
                 # Добавляем запись в историю
                 if prompt:
@@ -693,14 +734,15 @@ class BotDatabase:
                         "user_id": user_id,
                         "prompt": prompt
                     }).execute()
-                
+
                 # Инвалидируем кэш
                 invalidate_user_cache(user_id)
                 return
             except Exception as e:
                 logger.error(f"❌ Ошибка Supabase в increment_generation_count: {e}")
+                # Не возвращаем здесь - пробуем SQLite fallback
 
-        # SQLite версия
+        # SQLite версия (fallback)
         conn = self._get_connection()
         cursor = conn.cursor()
 
