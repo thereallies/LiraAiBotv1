@@ -1618,9 +1618,11 @@ async def process_message(message: Dict[str, Any], bot_token: str):
 
                 # Обычный ответ через LLM
                 await handle_text_message(chat_id, user_id, text, is_group=False)
-        
+
     except Exception as e:
+        import traceback
         logger.error(f"Ошибка при обработке сообщения: {e}")
+        logger.error(f"Трассировка: {traceback.format_exc()}")
 
 
 
