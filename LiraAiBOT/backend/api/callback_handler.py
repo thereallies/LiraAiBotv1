@@ -151,7 +151,7 @@ async def handle_callback(
         welcome_text = """👋 **LiraAI MultiAssistant**
 
 💬 Общение
-🎨 Генерация фото (Stable Diffusion 3)
+🎨 Генерация фото (Z-Image via Polza.ai)
 🎤 Голосовые
 📸 Анализ фото
 

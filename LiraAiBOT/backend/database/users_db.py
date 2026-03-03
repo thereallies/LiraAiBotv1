@@ -377,13 +377,23 @@ class BotDatabase:
                 # Количество генераций за сегодня - берём из daily_count (он обновляется при генерации)
                 # generation_history используем только как fallback
                 today_generations = limit_row.get("daily_count", 0) if limit_row else 0
-                
+
                 # Fallback: если daily_count = 0, считаем из истории
                 if today_generations == 0:
                     today = datetime.now().date().isoformat()
                     history_result = supabase.table("generation_history").select("id").eq("user_id", user_id).gte("created_at", today).execute()
                     if history_result.data:
                         today_generations = len(history_result.data)
+                
+                # Подсчет сообщений за день из dialog_history
+                messages_today = 0
+                try:
+                    today = datetime.now().date().isoformat()
+                    messages_result = supabase.table("dialog_history").select("id").eq("user_id", user_id).gte("created_at", today).execute()
+                    if messages_result.data:
+                        messages_today = len(messages_result.data)
+                except Exception as e:
+                    logger.debug(f"Не удалось получить статистику сообщений: {e}")
 
                 stats = {
                     "user_id": user_row.get("user_id"),
@@ -395,7 +405,8 @@ class BotDatabase:
                     "last_seen": user_row.get("last_seen"),
                     "daily_count": limit_row.get("daily_count", 0) if limit_row else 0,
                     "total_count": limit_row.get("total_count", 0) if limit_row else 0,
-                    "today_generations": today_generations
+                    "today_generations": today_generations,
+                    "messages_today": messages_today
                 }
 
                 # ❌ ОТКЛЮЧЕНО: Не кэшируем статистику
@@ -594,6 +605,9 @@ class BotDatabase:
                 today = datetime.now().date()
                 last_reset_str = limit_row.get("last_reset", str(today))
                 
+                # Расчет времени сброса лимита
+                reset_time_text = "сегодня в 00:00"
+                
                 # Обработка разных форматов даты из Supabase
                 try:
                     if 'T' in last_reset_str:
@@ -608,6 +622,11 @@ class BotDatabase:
                 if last_reset_date < today:
                     self._reset_daily_limit(user_id)
                     daily_count = 0
+                    reset_time_text = "сегодня в 00:00"
+                else:
+                    # Лимит сбрасывается завтра в 00:00
+                    tomorrow = today + timedelta(days=1)
+                    reset_time_text = f"завтра в 00:00 ({tomorrow.strftime('%d.%m')})"
 
                 allowed = daily_limit == -1 or daily_count < daily_limit
                 
@@ -618,7 +637,7 @@ class BotDatabase:
                     "daily_count": daily_count,
                     "daily_limit": daily_limit,
                     "total_count": limit_row.get("total_count", 0),
-                    "reset_time": "сегодня в 00:00",
+                    "reset_time": reset_time_text,
                     "access_level": access_level
                 }
             except Exception as e:

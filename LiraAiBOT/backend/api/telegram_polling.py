@@ -171,7 +171,7 @@ async def show_start_menu(chat_id: str):
 • GLM-4.5 - полностью бесплатная
 
 🎨 **Генерация изображений:**
-• Stable Diffusion 3 - работает ✅
+• Z-Image (Polza.ai) - работает ✅
 • Gemini Image - в разработке ⚠️
 
 **Обо мне:**
@@ -1840,19 +1840,31 @@ async def handle_text_message(chat_id: str, user_id: str, text: str, is_group: b
                     name_parts.append(first_name)
                 if username:
                     name_parts.append(f"@{username}")
-                
+
                 name = " ".join(name_parts) if name_parts else f"User {user_id}"
                 
+                # Получаем информацию о лимитах
+                limit_info = db.check_generation_limit(user_id)
+                daily_count = limit_info.get('daily_count', 0)
+                daily_limit = limit_info.get('daily_limit', 3)
+                reset_time = limit_info.get('reset_time', 'завтра в 00:00')
+
                 stats_text = f"""📊 **Ваша статистика**
 
 👤 {name}
 🔑 Уровень: **{level_info.get(level, 'Пользователь')}**
 
-📈 Генерации:
-• Сегодня: {stats.get('daily_count', 0)}
+📈 Генерации изображений:
+• Сегодня: **{daily_count}/{daily_limit}**
 • Всего: {stats.get('total_count', 0)}
+• Лимит обновится: **{reset_time}**
 
-📅 В боте с: {stats.get('created_at', 'неизвестно')[:10]}"""
+💬 Сообщения в боте:
+• Сегодня: {stats.get('messages_today', 0)}
+
+📅 В боте с: {stats.get('created_at', 'неизвестно')[:10]}
+
+💡 **Совет:** Используйте `/clear` чтобы очистить историю диалога"""
                 await send_telegram_message(chat_id, stats_text)
             else:
                 await send_telegram_message(chat_id, "❌ Не удалось получить статистику")
@@ -2038,8 +2050,8 @@ async def handle_image_generation(chat_id: str, user_id: str, prompt: str, model
             if model_key:
                 logger.info(f"💾 Загружена image_model из БД для {user_id}: {model_key}")
 
-        # Определяем тип модели (Gemini или HF+Replicate)
-        is_hf_model = model_key and model_key.startswith("hf-")
+        # Определяем тип модели (Polza.ai или Gemini)
+        is_hf_model = model_key and model_key.startswith("polza-")
         
         # Проверяем доступность модели для уровня доступа
         if is_hf_model:
@@ -2073,8 +2085,9 @@ async def handle_image_generation(chat_id: str, user_id: str, prompt: str, model
         if limit_info['daily_limit'] == -1:
             limit_text = "📊 Доступно генераций: **Безлимит** (администратор)"
         else:
-            available_count = limit_info['daily_limit'] - limit_info['daily_count']
-            limit_text = f"📊 Доступно генераций: {available_count}/{limit_info['daily_limit']}"
+            current_count = limit_info['daily_count'] + 1  # +1 потому что эта генерация считается
+            daily_limit = limit_info['daily_limit']
+            limit_text = f"📊 Генерация: **{current_count}/{daily_limit}**"
 
         await send_telegram_message(
             chat_id,
@@ -2131,7 +2144,7 @@ async def handle_image_generation(chat_id: str, user_id: str, prompt: str, model
             with open(image_path, "wb") as f:
                 f.write(image_data)
 
-            provider_name = "FLUX" if is_hf_model else "Gemini"
+            provider_name = "Z-Image" if is_hf_model else "Gemini"
             await send_telegram_photo(
                 chat_id,
                 str(image_path),
@@ -2273,8 +2286,8 @@ async def start_polling_for_bot(token: str, bot_name: str = "Bot"):
                         db = get_database()
                         user_access_level = db.get_user_access_level(callback_user_id)
 
-                        # Определяем тип модели (Gemini или HF+Replicate)
-                        is_hf_model = model_key.startswith("hf-")
+                        # Определяем тип модели (Polza.ai или Gemini)
+                        is_hf_model = model_key.startswith("polza-")
                         
                         # Проверяем доступность модели для уровня доступа
                         if is_hf_model:
@@ -2294,7 +2307,7 @@ async def start_polling_for_bot(token: str, bot_name: str = "Bot"):
                         db.set_user_image_model(callback_user_id, model_key)
 
                         model_name = available_models[model_key]["description"]
-                        provider_name = "FLUX (Replicate)" if is_hf_model else "Gemini"
+                        provider_name = "Polza.ai" if is_hf_model else "Gemini"
 
                         await answer_callback_query(
                             callback_query["id"],

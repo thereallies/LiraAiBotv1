@@ -200,15 +200,15 @@ def create_image_model_selection_keyboard(access_level: str = "user") -> Dict[st
     models_by_level = {
         "admin": [
             # [{"text": "✨ Gemini 2.5 Flash", "callback_data": "img_gemini-flash"}],  # В разработке
-            [{"text": "🎨 Stable Diffusion 3", "callback_data": "img_hf-sd3-medium"}],
+            [{"text": "🎨 Z-Image (Polza.ai)", "callback_data": "img_polza-zimage"}],
         ],
         "subscriber": [
             # [{"text": "✨ Gemini 2.5 Flash", "callback_data": "img_gemini-flash"}],  # В разработке
-            [{"text": "🎨 Stable Diffusion 3", "callback_data": "img_hf-sd3-medium"}],
+            [{"text": "🎨 Z-Image (Polza.ai)", "callback_data": "img_polza-zimage"}],
         ],
         "user": [
             # [{"text": "✨ Gemini 2.5 Flash", "callback_data": "img_gemini-flash"}],  # В разработке
-            [{"text": "🎨 Stable Diffusion 3", "callback_data": "img_hf-sd3-medium"}],
+            [{"text": "🎨 Z-Image (Polza.ai)", "callback_data": "img_polza-zimage"}],
         ]
     }
 
