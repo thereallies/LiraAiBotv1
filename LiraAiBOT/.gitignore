@@ -34,10 +34,14 @@ ENV/
 # Environment
 .env
 .env.local
+.env.*
+!.env.example
 
 # Logs
 logs/
 *.log
+logs/*
+!logs/.gitkeep
 
 # Data
 data/
@@ -45,6 +49,8 @@ temp/
 *.db
 *.sqlite
 *.sqlite3
+!data/.gitkeep
+!temp/.gitkeep
 
 # Project-specific files
 Check_Correction_Complete_Guide.*

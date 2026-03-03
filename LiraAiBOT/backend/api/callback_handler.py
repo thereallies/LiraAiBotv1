@@ -84,35 +84,28 @@ async def handle_callback(
     # Обработка кнопки статистики
     elif callback_data == "stats":
         await answer_callback_query(callback_query["id"])
-        
+
         from backend.database.users_db import get_database
+        from backend.utils.formatters import format_short_stats
         db = get_database()
         stats = db.get_user_stats(callback_user_id)
-        
+
         if stats:
-            level_info = {
-                "admin": "👑 Админ (безлимит)",
-                "subscriber": "⭐ Подписчик (5/день)",
-                "sub+": "🚀 sub+ (30/день)",
-                "user": "👤 Пользователь (3/день)"
-            }
-            level = stats.get('access_level', 'user')
-
-            stats_text = f"""📊 **Статистика**
-
-🔑 Уровень: {level_info.get(level, 'Пользователь')}
-
-📈 Генерации:
-• Сегодня: {stats.get('daily_count', 0)}
-• Всего: {stats.get('total_count', 0)}"""
+            # Добавляем лимиты
+            limit_info = db.check_generation_limit(callback_user_id)
+            stats['daily_limit'] = limit_info.get('daily_limit', 3)
             
+            # Формируем короткую статистику
+            stats_text = format_short_stats(stats)
+
             back_buttons = [[{"text": "◀️ Назад", "callback_data": "back_to_main"}]]
-            
+
             await edit_message_text(
                 callback_chat_id,
                 callback_message_id,
                 stats_text,
-                back_buttons
+                back_buttons,
+                parse_mode="Markdown"
             )
         return True
     

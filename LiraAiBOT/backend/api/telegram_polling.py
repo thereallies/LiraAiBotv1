@@ -897,52 +897,27 @@ async def process_message(message: Dict[str, Any], bot_token: str):
                 # Команда /stats - статистика пользователя
                 if text == "/stats":
                     from backend.database.users_db import get_database
+                    from backend.utils.formatters import format_stats_card, format_limit_info
                     db = get_database()
 
                     # Принудительно обновляем данные пользователя из БД
                     stats = db.get_user_stats(user_id)
 
                     if stats:
-                        level_info = {
-                            "admin": "👑 Администратор (безлимит)",
-                            "subscriber": "⭐ Подписчик (5 в день)",
-                            "user": "👤 Пользователь (3 в день)"
-                        }
-                        level = stats.get('access_level', 'user')
-                        first_name = stats.get('first_name', '')
-                        username = stats.get('username', '')
-
-                        name_parts = []
-                        if first_name:
-                            name_parts.append(first_name)
-                        if username:
-                            name_parts.append(f"@{username}")
-
-                        name = " ".join(name_parts) if name_parts else f"User {user_id}"
-
                         # Получаем информацию о лимитах
                         limit_info = db.check_generation_limit(user_id)
-                        daily_count = limit_info.get('daily_count', 0)
-                        daily_limit = limit_info.get('daily_limit', 3)
-                        reset_time = limit_info.get('reset_time', 'завтра в 00:00')
-
-                        stats_text = f"""📊 **Ваша статистика**
-
-👤 {name}
-🔑 Уровень: **{level_info.get(level, 'Пользователь')}**
-
-📈 Генерации изображений:
-• Сегодня: **{daily_count}/{daily_limit}**
-• Всего: {stats.get('total_count', 0)}
-• Лимит обновится: **{reset_time}**
-
-💬 Сообщения в боте:
-• Сегодня: {stats.get('messages_today', 0)}
-
-📅 В боте с: {stats.get('created_at', 'неизвестно')[:10]}
-
-💡 **Совет:** Используйте `/clear` чтобы очистить историю диалога"""
-                        await send_telegram_message(chat_id, stats_text)
+                        
+                        # Добавляем лимиты в stats для форматирования
+                        stats['daily_limit'] = limit_info.get('daily_limit', 3)
+                        
+                        # Формируем красивую карточку статистики
+                        stats_text = format_stats_card(stats)
+                        
+                        # Добавляем кнопку
+                        from backend.utils.keyboards import create_main_menu_keyboard
+                        keyboard = create_main_menu_keyboard()
+                        
+                        await send_telegram_message(chat_id, stats_text, reply_markup=keyboard)
                     else:
                         await send_telegram_message(chat_id, "❌ Не удалось получить статистику")
                     return
