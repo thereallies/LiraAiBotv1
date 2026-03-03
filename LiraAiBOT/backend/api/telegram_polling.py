@@ -440,6 +440,21 @@ async def process_message(message: Dict[str, Any], bot_token: str):
                     )
                     return
                 
+                # Обработка кнопки "Назад к меню" - ПЕРВАЯ ПРОВЕРКА (до обработки кнопок режимов)
+                if text == "◀️ Назад к меню":
+                    user_selecting_model[user_id] = False
+                    mode_manager.set_mode(user_id, "auto")
+                    keyboard = create_main_menu_keyboard()
+                    # Удаляем сообщение пользователя (нажатие кнопки)
+                    if message_id:
+                        await delete_telegram_message(chat_id, message_id)
+                    await send_telegram_message(
+                        chat_id,
+                        "📱 **Главное меню**\n\nВыберите режим работы:",
+                        reply_markup=keyboard
+                    )
+                    return
+
                 # Обработка нажатий на кнопки reply-клавиатуры
                 if text in BOT_MODES.values():
                     mode = get_mode_from_button(text)
@@ -485,7 +500,7 @@ async def process_message(message: Dict[str, Any], bot_token: str):
 • Вы можете запросить удаление ваших данных через администратора
 
 Нажимая кнопку «🔒 Политика конфиденциальности», вы подтверждаете, что ознакомились с документом."""
-                        
+
                         # Отправляем с кнопкой-ссылкой
                         buttons = [
                             [{"text": "📄 Открыть документ", "url": privacy_url}]
@@ -523,59 +538,34 @@ async def process_message(message: Dict[str, Any], bot_token: str):
                         )
                         return
 
-                    # Для режима stats сразу показываем статистику
+                    # Для режима stats - перенаправляем на команду /stats
                     if mode == "stats":
+                        # Просто вызываем логику команды /stats
                         from backend.database.users_db import get_database
+                        from backend.utils.formatters import format_stats_card, format_limit_info
                         db = get_database()
 
                         # Сохраняем запрос пользователя в историю
                         db.save_dialog_message(user_id, "user", "📊 Статистика", model="system")
 
+                        # Принудительно обновляем данные пользователя из БД
                         stats = db.get_user_stats(user_id)
 
                         if stats:
-                            level_info = {
-                                "admin": "👑 Администратор (безлимит)",
-                                "subscriber": "⭐ Подписчик (5 в день)",
-                                "sub+": "🚀 sub+ (30 в день)",
-                                "user": "👤 Пользователь (3 в день)"
-                            }
-                            level = stats.get('access_level', 'user')
-                            first_name = stats.get('first_name', '')
-                            username = stats.get('username', '')
-
-                            name_parts = []
-                            if first_name:
-                                name_parts.append(first_name)
-                            if username:
-                                name_parts.append(f"@{username}")
-
-                            name = " ".join(name_parts) if name_parts else f"User {user_id}"
-
                             # Получаем информацию о лимитах
                             limit_info = db.check_generation_limit(user_id)
-                            daily_count = limit_info.get('daily_count', 0)
-                            daily_limit = limit_info.get('daily_limit', 3)
-                            reset_time = limit_info.get('reset_time', 'завтра в 00:00')
 
-                            stats_text = f"""📊 **Ваша статистика**
+                            # Добавляем лимиты в stats для форматирования
+                            stats['daily_limit'] = limit_info.get('daily_limit', 3)
 
-👤 {name}
-🔑 Уровень: **{level_info.get(level, 'Пользователь')}**
+                            # Формируем красивую карточку статистики
+                            stats_text = format_stats_card(stats)
 
-📈 Генерации изображений:
-• Сегодня: **{daily_count}/{daily_limit}**
-• Всего: {stats.get('total_count', 0)}
-• Лимит обновится: **{reset_time}**
+                            # Добавляем клавиатуру
+                            keyboard = create_main_menu_keyboard()
 
-💬 Сообщения в боте:
-• Сегодня: {stats.get('messages_today', 0)}
+                            await send_telegram_message(chat_id, stats_text, reply_markup=keyboard)
 
-📅 В боте с: {stats.get('created_at', 'неизвестно')[:10]}
-
-💡 **Совет:** Используйте `/clear` чтобы очистить историю диалога"""
-                            await send_telegram_message(chat_id, stats_text)
-                            
                             # Сохраняем ответ бота в историю
                             db.save_dialog_message(user_id, "assistant", "Статистика показана", model="system")
                         else:
@@ -591,21 +581,6 @@ async def process_message(message: Dict[str, Any], bot_token: str):
                     await send_telegram_message(
                         chat_id,
                         prompt,
-                        reply_markup=keyboard
-                    )
-                    return
-                
-                # Обработка кнопки "Назад к меню" - ДОЛЖНА БЫТЬ ПЕРВОЙ ПРОВЕРКОЙ
-                if text == "◀️ Назад к меню":
-                    user_selecting_model[user_id] = False
-                    mode_manager.set_mode(user_id, "auto")
-                    keyboard = create_main_menu_keyboard()
-                    # Удаляем сообщение пользователя (нажатие кнопки)
-                    if message_id:
-                        await delete_telegram_message(chat_id, message_id)
-                    await send_telegram_message(
-                        chat_id,
-                        "📱 **Главное меню**\n\nВыберите режим работы:",
                         reply_markup=keyboard
                     )
                     return
@@ -906,17 +881,16 @@ async def process_message(message: Dict[str, Any], bot_token: str):
                     if stats:
                         # Получаем информацию о лимитах
                         limit_info = db.check_generation_limit(user_id)
-                        
+
                         # Добавляем лимиты в stats для форматирования
                         stats['daily_limit'] = limit_info.get('daily_limit', 3)
-                        
+
                         # Формируем красивую карточку статистики
                         stats_text = format_stats_card(stats)
-                        
-                        # Добавляем кнопку
-                        from backend.utils.keyboards import create_main_menu_keyboard
+
+                        # Добавляем кнопку (используем глобальный импорт)
                         keyboard = create_main_menu_keyboard()
-                        
+
                         await send_telegram_message(chat_id, stats_text, reply_markup=keyboard)
                     else:
                         await send_telegram_message(chat_id, "❌ Не удалось получить статистику")
