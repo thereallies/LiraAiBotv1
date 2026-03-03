@@ -5,11 +5,18 @@
 import os
 import sqlite3
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional, Dict, Any, List
 from pathlib import Path
 
 logger = logging.getLogger("bot.database")
+
+# Московское время (UTC+3)
+MOSCOW_TZ = timezone(timedelta(hours=3))
+
+def get_moscow_now() -> datetime:
+    """Получает текущее время по Москве"""
+    return datetime.now(MOSCOW_TZ)
 
 # Путь к SQLite базе данных (только для локальной разработки)
 DB_PATH = Path(__file__).parent.parent.parent / "data" / "bot.db"
@@ -223,7 +230,7 @@ class BotDatabase:
                 
                 if result.data:
                     # Обновляем ТОЛЬКО изменённые поля (не затираем existing data)
-                    update_data = {"last_seen": datetime.now().isoformat()}
+                    update_data = {"last_seen": get_moscow_now().isoformat()}
                     if username:
                         update_data["username"] = username
                     if first_name:
@@ -242,7 +249,7 @@ class BotDatabase:
                         "first_name": first_name,
                         "last_name": last_name,
                         "access_level": "user",
-                        "last_seen": datetime.now().isoformat()
+                        "last_seen": get_moscow_now().isoformat()
                     }
                     supabase.table("users").insert(data).execute()
                     # Создаём лимиты
@@ -313,35 +320,44 @@ class BotDatabase:
         """Устанавливает уровень доступа пользователя (с кэшем)"""
         if level not in ACCESS_LEVELS:
             return False
-        
+
+        # Получаем старый уровень для логирования
+        old_level = self.get_user_access_level(user_id)
+
         # Сразу обновляем кэш!
         if user_id not in _user_cache:
             _user_cache[user_id] = {"user_id": user_id, "access_level": level}
         else:
             _user_cache[user_id]["access_level"] = level
-        
+
+        # Инвалидируем кэш статистики и лимитов чтобы обновились данные
+        invalidate_user_cache(user_id)
+        logger.info(f"🔑 Уровень доступа {user_id} изменён на {level}, кэш инвалидирован")
+
         # Если используем Supabase
         if USE_SUPABASE and supabase:
             try:
                 # Сначала получаем текущие данные пользователя
                 result = supabase.table("users").select("username, first_name, last_name").eq("user_id", user_id).execute()
-                
+
                 if result.data:
                     # Обновляем ТОЛЬКО access_level, сохраняя остальные поля
                     update_data = {"access_level": level}
                     supabase.table("users").update(update_data).eq("user_id", user_id).execute()
+                    logger.info(f"✅ Supabase: access_level для {user_id} обновлён: {old_level} → {level}")
                 else:
                     # Пользователя нет - создаём
                     supabase.table("users").insert({
                         "user_id": user_id,
                         "access_level": level
                     }).execute()
-                
+                    logger.info(f"✅ Supabase: создан пользователь {user_id} с уровнем {level}")
+
                 return True
             except Exception as e:
                 logger.error(f"❌ Ошибка Supabase в set_user_access_level: {e}")
                 return False
-        
+
         # SQLite только для локальной разработки
         if not USE_SUPABASE:
             conn = self._get_connection()
@@ -350,7 +366,7 @@ class BotDatabase:
             conn.commit()
             conn.close()
             return True
-        
+
         return False
 
     def get_user_stats(self, user_id: str) -> Optional[Dict[str, Any]]:
@@ -380,7 +396,7 @@ class BotDatabase:
 
                 # Fallback: если daily_count = 0, считаем из истории
                 if today_generations == 0:
-                    today = datetime.now().date().isoformat()
+                    today = get_moscow_now().date().isoformat()
                     history_result = supabase.table("generation_history").select("id").eq("user_id", user_id).gte("created_at", today).execute()
                     if history_result.data:
                         today_generations = len(history_result.data)
@@ -388,7 +404,7 @@ class BotDatabase:
                 # Подсчет сообщений за день из dialog_history
                 messages_today = 0
                 try:
-                    today = datetime.now().date().isoformat()
+                    today = get_moscow_now().date().isoformat()
                     messages_result = supabase.table("dialog_history").select("id").eq("user_id", user_id).gte("created_at", today).execute()
                     if messages_result.data:
                         messages_today = len(messages_result.data)
@@ -586,6 +602,9 @@ class BotDatabase:
                 
                 access_level = user_result.data[0].get("access_level", "user")
                 
+                logger.info(f"🔍 access_level для {user_id}: {access_level}")
+                logger.info(f"   daily_limit из ACCESS_LEVELS: {ACCESS_LEVELS.get(access_level, {}).get('daily_limit', 3)}")
+
                 limits_result = supabase.table("generation_limits").select("*").eq("user_id", user_id).execute()
                 if not limits_result.data:
                     return {
@@ -602,7 +621,7 @@ class BotDatabase:
                 daily_limit = ACCESS_LEVELS.get(access_level, {}).get("daily_limit", 3)
 
                 # Проверяем нужно ли сбросить счетчик (24 часа с последнего сброса)
-                now = datetime.now()
+                now = get_moscow_now()
                 last_reset_str = limit_row.get("last_reset", now.isoformat())
 
                 # Расчет времени сброса лимита
@@ -610,21 +629,31 @@ class BotDatabase:
                 hours_until_reset = 0
 
                 # Обработка разных форматов даты/времени из Supabase
+                last_reset_dt = None
                 try:
                     if 'T' in last_reset_str:
-                        # ISO формат с временем (2026-03-03T15:30:00)
-                        last_reset_dt = datetime.fromisoformat(last_reset_str.replace('Z', '+00:00'))
-                        # Убираем timezone info для сравнения
+                        # ISO формат с временем (2026-03-03T15:30:00+00:00 или 2026-03-03T15:30:00)
+                        last_reset_str_clean = last_reset_str.replace('Z', '+00:00')
+                        last_reset_dt = datetime.fromisoformat(last_reset_str_clean)
+                        # Если есть timezone - конвертируем в Moscow time и убираем tzinfo
                         if last_reset_dt.tzinfo:
-                            last_reset_dt = last_reset_dt.replace(tzinfo=None)
+                            from datetime import timezone
+                            moscow_tz = timezone(timedelta(hours=3))
+                            last_reset_dt = last_reset_dt.astimezone(moscow_tz).replace(tzinfo=None)
+                        else:
+                            # Уже без timezone
+                            pass
                     else:
                         # Просто дата (2026-03-03) - считаем как начало дня
                         last_reset_dt = datetime.strptime(last_reset_str, "%Y-%m-%d")
-                except (ValueError, TypeError):
-                    last_reset_dt = now
+                except (ValueError, TypeError) as e:
+                    logger.warning(f"⚠️ Ошибка парсинга last_reset '{last_reset_str}': {e}")
+                    last_reset_dt = now.replace(tzinfo=None) if now.tzinfo else now
 
                 # Проверяем прошло ли 24 часа
-                time_since_reset = now - last_reset_dt
+                # now уже с timezone, last_reset_dt без timezone - нужно привести к одному формату
+                now_naive = now.replace(tzinfo=None) if now.tzinfo else now
+                time_since_reset = now_naive - last_reset_dt
                 hours_since_reset = time_since_reset.total_seconds() / 3600
 
                 if hours_since_reset >= 24:
@@ -700,7 +729,7 @@ class BotDatabase:
         total_count = row["total_count"]
         daily_limit = ACCESS_LEVELS.get(access_level, {}).get("daily_limit", 3)
 
-        today = datetime.now().date()
+        today = get_moscow_now().date()
         last_reset_date = datetime.strptime(last_reset, "%Y-%m-%d").date() if last_reset else today
 
         if last_reset_date < today:
@@ -724,7 +753,7 @@ class BotDatabase:
             try:
                 supabase.table("generation_limits").update({
                     "daily_count": 0,
-                    "last_reset": datetime.now().date().isoformat()
+                    "last_reset": get_moscow_now().date().isoformat()
                 }).eq("user_id", user_id).execute()
                 return
             except Exception as e:
@@ -750,49 +779,59 @@ class BotDatabase:
 
                 if not current.data or len(current.data) == 0:
                     # Создаём запись
-                    now = datetime.now().isoformat()
+                    now = get_moscow_now().isoformat()
                     supabase.table("generation_limits").insert({
                         "user_id": user_id,
                         "daily_count": 1,
                         "total_count": 1,
                         "last_reset": now  # Сохраняем полное время для 24h отсчета
                     }).execute()
-                    logger.info(f"💾 generation_limits создан: daily_count=1, total_count=1, last_reset={now}")
+                    logger.info(f"✅ GENERATION COUNT: {user_id} создан: daily=1, total=1")
                 else:
                     # Увеличиваем счетчики
                     row = current.data[0]
-                    new_daily = row.get("daily_count", 0) + 1
-                    new_total = row.get("total_count", 0) + 1
-                    
+                    old_daily = row.get("daily_count", 0)
+                    old_total = row.get("total_count", 0)
+                    new_daily = old_daily + 1
+                    new_total = old_total + 1
+
                     # Проверяем нужно ли обновить last_reset (если прошло 24 часа)
                     last_reset_str = row.get("last_reset", "")
-                    now = datetime.now()
-                    
+                    now = get_moscow_now()
+
+                    last_reset_dt = None
                     try:
                         if 'T' in last_reset_str:
-                            last_reset_dt = datetime.fromisoformat(last_reset_str.replace('Z', '+00:00'))
+                            last_reset_str_clean = last_reset_str.replace('Z', '+00:00')
+                            last_reset_dt = datetime.fromisoformat(last_reset_str_clean)
+                            # Если есть timezone - конвертируем в Moscow time и убираем tzinfo
                             if last_reset_dt.tzinfo:
-                                last_reset_dt = last_reset_dt.replace(tzinfo=None)
+                                from datetime import timezone
+                                moscow_tz = timezone(timedelta(hours=3))
+                                last_reset_dt = last_reset_dt.astimezone(moscow_tz).replace(tzinfo=None)
                         else:
                             last_reset_dt = datetime.strptime(last_reset_str, "%Y-%m-%d")
-                        
-                        hours_since = (now - last_reset_dt).total_seconds() / 3600
-                        
+
+                        # now с timezone, last_reset_dt без timezone - приводим к одному формату
+                        now_naive = now.replace(tzinfo=None) if now.tzinfo else now
+                        hours_since = (now_naive - last_reset_dt).total_seconds() / 3600
+
                         if hours_since >= 24:
                             # Прошло 24 часа - сбрасываем счетчик и обновляем время
                             new_daily = 1
-                            new_total = row.get("total_count", 0) + 1
-                            logger.info(f"🔄 Прошло 24 часа ({hours_since:.1f}), сброс daily_count")
-                    except:
-                        pass
-                    
+                            new_total = old_total + 1
+                            logger.info(f"🔄 Прошло 24 часа ({hours_since:.1f}), сброс daily: {old_daily} → {new_daily}")
+                    except Exception as e:
+                        logger.warning(f"⚠️ Ошибка расчёта времени в increment_generation_count: {e}")
+                        # Используем дефолтное поведение - просто увеличиваем счетчик
+
                     supabase.table("generation_limits").update({
                         "daily_count": new_daily,
                         "total_count": new_total,
                         "last_reset": now.isoformat()  # Сохраняем полное время
                     }).eq("user_id", user_id).execute()
-                    
-                    logger.info(f"💾 generation_limits обновлён: daily_count={new_daily}, total_count={new_total}")
+
+                    logger.info(f"✅ GENERATION COUNT: {user_id} обновлён: daily={old_daily}→{new_daily}, total={old_total}→{new_total}")
 
                 # Добавляем запись в историю
                 if prompt:
@@ -803,7 +842,7 @@ class BotDatabase:
 
                 # Инвалидируем кэш
                 invalidate_user_cache(user_id)
-                
+
                 return
             except Exception as e:
                 logger.error(f"❌ Ошибка Supabase в increment_generation_count: {e}")
@@ -829,9 +868,10 @@ class BotDatabase:
 
         conn.commit()
         conn.close()
-        
+
         # Инвалидируем кэш
         invalidate_user_cache(user_id)
+        logger.info(f"✅ GENERATION COUNT (SQLite): {user_id} увеличен")
 
     def get_all_users_count(self) -> int:
         """Получает общее количество пользователей"""
@@ -1189,7 +1229,7 @@ class BotDatabase:
                 # Удаляем через фильтр
                 from datetime import datetime, timedelta
                 
-                cutoff_date = datetime.now() - timedelta(days=days_to_keep)
+                cutoff_date = get_moscow_now() - timedelta(days=days_to_keep)
                 
                 # Получаем ID сообщений для удаления
                 old_messages = supabase.table("dialog_history").select("id").lt(
@@ -1327,7 +1367,7 @@ class BotDatabase:
                 if result.data and len(result.data) > 0:
                     supabase.table("user_settings").update({
                         "selected_model": model_key,
-                        "updated_at": datetime.now().isoformat()
+                        "updated_at": get_moscow_now().isoformat()
                     }).eq("user_id", user_id).execute()
                 else:
                     supabase.table("user_settings").insert({
@@ -1414,7 +1454,7 @@ class BotDatabase:
                 if result.data and len(result.data) > 0:
                     supabase.table("user_settings").update({
                         "image_model": model_key,
-                        "updated_at": datetime.now().isoformat()
+                        "updated_at": get_moscow_now().isoformat()
                     }).eq("user_id", user_id).execute()
                 else:
                     supabase.table("user_settings").insert({
@@ -1423,7 +1463,7 @@ class BotDatabase:
                         "selected_model": "groq-llama"  # Default text model
                     }).execute()
 
-                logger.info(f"💾 Сохранена image_model для {user_id}: {model_key}")
+                logger.info(f"💾 Сохранена image_model д��я {user_id}: {model_key}")
                 
                 # Инвалидируем кэш
                 invalidate_user_cache(user_id)
@@ -1475,7 +1515,7 @@ class BotDatabase:
             except Exception as e:
                 logger.error(f"❌ Ошибка Supabase в remove_user: {e}")
                 return False
-        
+
         # SQLite версия
         conn = self._get_connection()
         cursor = conn.cursor()
@@ -1490,6 +1530,266 @@ class BotDatabase:
             logger.error(f"❌ Ошибка удаления пользователя: {e}")
             conn.rollback()
             return False
+        finally:
+            conn.close()
+
+    # ============================================
+    # Методы для аудита действий администраторов
+    # ============================================
+
+    def log_admin_action(
+        self,
+        admin_user_id: str,
+        action_type: str,
+        target_user_id: Optional[str] = None,
+        old_value: Optional[str] = None,
+        new_value: Optional[str] = None,
+        details: Optional[Dict[str, Any]] = None,
+        chat_id: Optional[str] = None,
+        message_id: Optional[int] = None,
+        success: bool = True,
+        admin_username: Optional[str] = None,
+        target_username: Optional[str] = None
+    ) -> bool:
+        """
+        Логирует действие администратора в audit log.
+
+        Args:
+            admin_user_id: ID администратора
+            action_type: Тип действия (set_level, remove_level, add_user, remove_user, view_history, etc.)
+            target_user_id: ID целевого пользователя (если есть)
+            old_value: Старое значение (например, старый уровень)
+            new_value: Новое значение (например, новый уровень)
+            details: Дополнительные детали (JSON)
+            chat_id: ID чата где выполнено действие
+            message_id: ID сообщения с командой
+            success: Успешно ли выполнено действие
+            admin_username: Username администратора
+            target_username: Username целевого пользователя
+
+        Returns:
+            True если успешно залогировано
+        """
+        if USE_SUPABASE and supabase:
+            try:
+                data = {
+                    "admin_user_id": admin_user_id,
+                    "admin_username": admin_username,
+                    "action_type": action_type,
+                    "target_user_id": target_user_id,
+                    "target_username": target_username,
+                    "old_value": old_value,
+                    "new_value": new_value,
+                    "details": details or {},
+                    "chat_id": chat_id,
+                    "message_id": message_id,
+                    "success": success,
+                    "created_at": get_moscow_now().isoformat()
+                }
+                supabase.table("admin_audit_log").insert(data).execute()
+                logger.info(f"📝 Audit log: {admin_user_id} -> {action_type} (target: {target_user_id})")
+                return True
+            except Exception as e:
+                logger.error(f"❌ Ошибка логирования в Supabase: {e}")
+                # Не падаем - продолжаем работу без логирования
+                return False
+
+        # SQLite версия (для локальной разработки)
+        conn = self._get_connection()
+        cursor = conn.cursor()
+
+        # Создаём таблицу если нет
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS admin_audit_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                admin_user_id TEXT NOT NULL,
+                admin_username TEXT,
+                action_type TEXT NOT NULL,
+                target_user_id TEXT,
+                target_username TEXT,
+                old_value TEXT,
+                new_value TEXT,
+                details TEXT,
+                chat_id TEXT,
+                message_id INTEGER,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                success BOOLEAN DEFAULT 1
+            )
+        """)
+
+        try:
+            import json
+            cursor.execute("""
+                INSERT INTO admin_audit_log 
+                (admin_user_id, admin_username, action_type, target_user_id, target_username, 
+                 old_value, new_value, details, chat_id, message_id, success)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                admin_user_id,
+                admin_username,
+                action_type,
+                target_user_id,
+                target_username,
+                old_value,
+                new_value,
+                json.dumps(details) if details else None,
+                chat_id,
+                message_id,
+                1 if success else 0
+            ))
+            conn.commit()
+            logger.info(f"📝 Audit log (SQLite): {admin_user_id} -> {action_type}")
+            return True
+        except Exception as e:
+            logger.error(f"❌ Ошибка логирования в SQLite: {e}")
+            conn.rollback()
+            return False
+        finally:
+            conn.close()
+
+    def get_admin_audit_log(
+        self,
+        admin_user_id: Optional[str] = None,
+        target_user_id: Optional[str] = None,
+        action_type: Optional[str] = None,
+        limit: int = 50
+    ) -> List[Dict[str, Any]]:
+        """
+        Получает записи из audit log.
+
+        Args:
+            admin_user_id: Фильтр по ID администратора
+            target_user_id: Фильтр по целевому пользователю
+            action_type: Фильтр по типу действия
+            limit: Максимальное количество записей
+
+        Returns:
+            Список записей audit log
+        """
+        if USE_SUPABASE and supabase:
+            try:
+                query = supabase.table("admin_audit_log").select("*")
+                
+                if admin_user_id:
+                    query = query.eq("admin_user_id", admin_user_id)
+                if target_user_id:
+                    query = query.eq("target_user_id", target_user_id)
+                if action_type:
+                    query = query.eq("action_type", action_type)
+                
+                result = query.order("created_at", desc=True).limit(limit).execute()
+                return result.data if result.data else []
+            except Exception as e:
+                logger.error(f"❌ Ошибка получения audit log из Supabase: {e}")
+                return []
+
+        # SQLite версия
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        
+        try:
+            conditions = []
+            params = []
+            
+            if admin_user_id:
+                conditions.append("admin_user_id = ?")
+                params.append(admin_user_id)
+            if target_user_id:
+                conditions.append("target_user_id = ?")
+                params.append(target_user_id)
+            if action_type:
+                conditions.append("action_type = ?")
+                params.append(action_type)
+            
+            where_clause = " AND ".join(conditions) if conditions else "1=1"
+            
+            cursor.execute(f"""
+                SELECT * FROM admin_audit_log 
+                WHERE {where_clause}
+                ORDER BY created_at DESC
+                LIMIT ?
+            """, params + [limit])
+            
+            rows = cursor.fetchall()
+            columns = [desc[0] for desc in cursor.description]
+            return [dict(zip(columns, row)) for row in rows]
+        except Exception as e:
+            logger.error(f"❌ Ошибка получения audit log из SQLite: {e}")
+            return []
+        finally:
+            conn.close()
+
+    def get_admin_stats(self, admin_user_id: str) -> Dict[str, Any]:
+        """
+        Получает статистику действий администратора.
+
+        Args:
+            admin_user_id: ID администратора
+
+        Returns:
+            Словарь со статистикой
+        """
+        if USE_SUPABASE and supabase:
+            try:
+                # Получаем все действия администратора
+                result = supabase.table("admin_audit_log").select("action_type, success").eq("admin_user_id", admin_user_id).execute()
+                
+                if not result.data:
+                    return {
+                        "total_actions": 0,
+                        "successful_actions": 0,
+                        "failed_actions": 0,
+                        "level_changes": 0,
+                        "users_added": 0,
+                        "users_removed": 0,
+                        "history_views": 0
+                    }
+                
+                actions = result.data
+                return {
+                    "total_actions": len(actions),
+                    "successful_actions": sum(1 for a in actions if a.get("success", True)),
+                    "failed_actions": sum(1 for a in actions if not a.get("success", True)),
+                    "level_changes": sum(1 for a in actions if a.get("action_type") in ("set_level", "remove_level")),
+                    "users_added": sum(1 for a in actions if a.get("action_type") == "add_user"),
+                    "users_removed": sum(1 for a in actions if a.get("action_type") == "remove_user"),
+                    "history_views": sum(1 for a in actions if a.get("action_type") == "view_history")
+                }
+            except Exception as e:
+                logger.error(f"❌ Ошибка получения статистики администратора: {e}")
+                return {}
+
+        # SQLite версия
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        
+        try:
+            cursor.execute("""
+                SELECT 
+                    COUNT(*) as total,
+                    SUM(CASE WHEN success = 1 THEN 1 ELSE 0 END) as successful,
+                    SUM(CASE WHEN success = 0 THEN 1 ELSE 0 END) as failed,
+                    SUM(CASE WHEN action_type IN ('set_level', 'remove_level') THEN 1 ELSE 0 END) as level_changes,
+                    SUM(CASE WHEN action_type = 'add_user' THEN 1 ELSE 0 END) as users_added,
+                    SUM(CASE WHEN action_type = 'remove_user' THEN 1 ELSE 0 END) as users_removed,
+                    SUM(CASE WHEN action_type = 'view_history' THEN 1 ELSE 0 END) as history_views
+                FROM admin_audit_log
+                WHERE admin_user_id = ?
+            """, (admin_user_id,))
+            
+            row = cursor.fetchone()
+            return {
+                "total_actions": row[0],
+                "successful_actions": row[1],
+                "failed_actions": row[2],
+                "level_changes": row[3],
+                "users_added": row[4],
+                "users_removed": row[5],
+                "history_views": row[6]
+            }
+        except Exception as e:
+            logger.error(f"❌ Ошибка получения статистики: {e}")
+            return {}
         finally:
             conn.close()
 

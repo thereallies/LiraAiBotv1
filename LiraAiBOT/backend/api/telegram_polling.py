@@ -857,6 +857,12 @@ async def process_message(message: Dict[str, Any], bot_token: str):
 • /admin dialog_stats <user_id> - Статистика диалога пользователя
 • /admin cleanup_dialogs [days] - Очистка истории старше N дней (по умолчанию 30)
 
+📋 Audit Log (действия администраторов):
+• /admin log - Последние действия (ваши)
+• /admin log [user_id] [limit] - Логи по пользователю
+• /admin log --admin=[user_id] - Логи администратора
+• /admin stats - Ваша статистика как администратора
+
 🔧 Тех.работы:
 • /admin maintenance [HH:MM] - Включить тех.работы
 • /admin maintenance_off - Выключить тех.работы
@@ -874,7 +880,8 @@ async def process_message(message: Dict[str, Any], bot_token: str):
 /admin mes Друзья, Grok недоступен, пользуйтесь OpenRouter
 /admin history 1658547011 50
 /admin dialog_stats 1658547011
-/admin cleanup_dialogs 30
+/admin log 1658547011 50
+/admin log --admin=123456789
 /admin set_level 123456789 subscriber
 /admin maintenance 17:00
 """
@@ -1000,27 +1007,42 @@ async def process_message(message: Dict[str, Any], bot_token: str):
                 if text.startswith("/admin remove_level "):
                     from backend.database.users_db import get_database
                     db = get_database()
-                    
+
                     if not db.is_admin(user_id):
                         await send_telegram_message(chat_id, "❌ У вас нет прав администратора")
                         return
-                    
+
                     # Парсим команду: /admin remove_level user_id
                     target_user_id = text.replace("/admin remove_level ", "").strip()
-                    
+
                     if not target_user_id or not target_user_id.isdigit():
                         await send_telegram_message(chat_id, "❌ Использование: /admin remove_level [user_id]")
                         return
-                    
+
                     # Получаем текущий уровень
                     old_level = db.get_user_access_level(target_user_id)
-                    
+
                     # Добавляем пользователя если не существует
                     db.add_or_update_user(target_user_id)
+
+                    success = db.set_user_access_level(target_user_id, "user")
                     
-                    if db.set_user_access_level(target_user_id, "user"):
+                    # Логируем действие администратора
+                    db.log_admin_action(
+                        admin_user_id=user_id,
+                        admin_username=username,
+                        action_type="remove_level",
+                        target_user_id=target_user_id,
+                        old_value=old_level,
+                        new_value="user",
+                        chat_id=chat_id,
+                        message_id=message_id,
+                        success=success
+                    )
+
+                    if success:
                         await send_telegram_message(chat_id, f"✅ Уровень доступа снят\n\nПользователь: {target_user_id}\nБыло: {old_level}\nСтало: 👤 Пользователь (3 в день)")
-                        
+
                         # Отправляем уведомление пользователю
                         try:
                             await send_telegram_message(target_user_id, f"👤 Ваш уровень доступа изменен.\n\nБыло: {old_level}\nСтало: 3 генерации в день.\n\nСпасибо за использование LiraAI MultiAssistent!")
@@ -1042,7 +1064,7 @@ async def process_message(message: Dict[str, Any], bot_token: str):
                     # Парсим команду: /admin set_level user_id level
                     parts = text.replace("/admin set_level ", "").strip().split()
                     logger.info(f"🔧 Admin command: {text}, parts: {parts}, len: {len(parts)}")
-                    
+
                     if len(parts) != 2:
                         await send_telegram_message(chat_id, f"❌ Использование: /admin set_level [user_id] [level]\n\nПример:\n/admin set_level 123456789 subscriber")
                         return
@@ -1058,14 +1080,29 @@ async def process_message(message: Dict[str, Any], bot_token: str):
 
                     # Получаем текущий уровень
                     old_level = db.get_user_access_level(target_user_id)
-                    
+
                     # Добавляем пользователя если не существует
                     db.add_or_update_user(target_user_id)
 
-                    if db.set_user_access_level(target_user_id, new_level):
+                    success = db.set_user_access_level(target_user_id, new_level)
+                    
+                    # Логируем действие администратора
+                    db.log_admin_action(
+                        admin_user_id=user_id,
+                        admin_username=username,
+                        action_type="set_level",
+                        target_user_id=target_user_id,
+                        old_value=old_level,
+                        new_value=new_level,
+                        chat_id=chat_id,
+                        message_id=message_id,
+                        success=success
+                    )
+
+                    if success:
                         level_names = {"admin": "👑 Админ", "subscriber": "⭐ Подписчик", "user": "👤 Пользователь"}
                         await send_telegram_message(chat_id, f"✅ Уровень доступа изменен\n\nПользователь: {target_user_id}\nБыло: {level_names.get(old_level, old_level)}\nСтало: {level_names.get(new_level, new_level)}")
-                        
+
                         # Отправляем уведомление пользователю
                         level_messages = {
                             "admin": "🎉 Поздравляем! Вам предоставлены права администратора.\n\nТеперь у вас безлимитная генерация изображений!\n\nИспользуйте /admin для управления ботом.",
@@ -1091,12 +1128,24 @@ async def process_message(message: Dict[str, Any], bot_token: str):
 
                     # Парсим команду: /admin add_user user_id
                     target_user_id = text.replace("/admin add_user ", "").strip()
-                    
+
                     if not target_user_id or not target_user_id.isdigit():
                         await send_telegram_message(chat_id, "❌ Использование: /admin add_user [user_id]\n\nПример:\n/admin add_user 123456789")
                         return
 
                     db.add_or_update_user(target_user_id)
+                    
+                    # Логируем действие администратора
+                    db.log_admin_action(
+                        admin_user_id=user_id,
+                        admin_username=username,
+                        action_type="add_user",
+                        target_user_id=target_user_id,
+                        chat_id=chat_id,
+                        message_id=message_id,
+                        success=True
+                    )
+                    
                     await send_telegram_message(chat_id, f"✅ Пользователь {target_user_id} добавлен в базу")
                     return
 
@@ -1111,12 +1160,25 @@ async def process_message(message: Dict[str, Any], bot_token: str):
 
                     # Парсим команду: /admin remove_user user_id
                     target_user_id = text.replace("/admin remove_user ", "").strip()
-                    
+
                     if not target_user_id or not target_user_id.isdigit():
                         await send_telegram_message(chat_id, "❌ Использование: /admin remove_user [user_id]")
                         return
 
-                    if db.remove_user(target_user_id):
+                    success = db.remove_user(target_user_id)
+                    
+                    # Логируем действие администратора
+                    db.log_admin_action(
+                        admin_user_id=user_id,
+                        admin_username=username,
+                        action_type="remove_user",
+                        target_user_id=target_user_id,
+                        chat_id=chat_id,
+                        message_id=message_id,
+                        success=success
+                    )
+                    
+                    if success:
                         await send_telegram_message(chat_id, f"✅ Пользователь {target_user_id} удален из базы данных")
                     else:
                         await send_telegram_message(chat_id, f"❌ Ошибка при удалении пользователя {target_user_id}")
@@ -1254,6 +1316,39 @@ async def process_message(message: Dict[str, Any], bot_token: str):
                     await send_telegram_message(chat_id, stats_text)
                     return
 
+                # Админ команда: admin_stats - статистика действий администратора
+                if text == "/admin admin_stats":
+                    from backend.database.users_db import get_database
+                    db = get_database()
+
+                    if not db.is_admin(user_id):
+                        await send_telegram_message(chat_id, "❌ У вас нет прав администратора")
+                        return
+
+                    # Получаем статистику администратора
+                    admin_stats = db.get_admin_stats(user_id)
+
+                    if not admin_stats:
+                        await send_telegram_message(chat_id, "❌ Статистика не найдена")
+                        return
+
+                    stats_text = f"""📊 Ваша статистика администратора
+
+🔧 Всего действий: {admin_stats.get('total_actions', 0)}
+✅ Успешных: {admin_stats.get('successful_actions', 0)}
+❌ Ошибок: {admin_stats.get('failed_actions', 0)}
+
+📈 Детализация:
+• Изменений уровня: {admin_stats.get('level_changes', 0)}
+• Добавлено пользователей: {admin_stats.get('users_added', 0)}
+• Удалено пользователей: {admin_stats.get('users_removed', 0)}
+• Просмотров истории: {admin_stats.get('history_views', 0)}
+
+💡 Используйте /admin log чтобы увидеть последние действия
+"""
+                    await send_telegram_message(chat_id, stats_text)
+                    return
+
                 # Админ команда: history <user_id> - история диалога пользователя
                 if text.startswith("/admin history "):
                     from backend.database.users_db import get_database
@@ -1274,6 +1369,18 @@ async def process_message(message: Dict[str, Any], bot_token: str):
                             "❌ Использование: /admin history <user_id> [limit]\n\nПример: /admin history 1658547011 50"
                         )
                         return
+
+                    # Логируем действие администратора (просмотр истории)
+                    db.log_admin_action(
+                        admin_user_id=user_id,
+                        admin_username=username,
+                        action_type="view_history",
+                        target_user_id=target_user_id,
+                        details={"limit": limit},
+                        chat_id=chat_id,
+                        message_id=message_id,
+                        success=True
+                    )
 
                     # Получаем историю
                     history = db.get_admin_dialog_history(target_user_id, limit=limit)
@@ -1313,6 +1420,105 @@ async def process_message(message: Dict[str, Any], bot_token: str):
                         history_text += f"\n\n... и ещё {len(history) - 10} сообщений"
 
                     await send_telegram_message(chat_id, history_text)
+                    return
+
+                # Админ команда: log - просмотр audit log действий администраторов
+                if text.startswith("/admin log"):
+                    from backend.database.users_db import get_database
+                    db = get_database()
+
+                    if not db.is_admin(user_id):
+                        await send_telegram_message(chat_id, "❌ У вас нет прав администратора")
+                        return
+
+                    # Парсим команду: /admin log [admin_id|target_id] [limit]
+                    parts = text.replace("/admin log", "").strip().split()
+                    limit = 20
+                    filter_value = None
+                    filter_type = None
+
+                    # Определяем фильтр и лимит
+                    for part in parts:
+                        if part.isdigit():
+                            if len(part) > 5:  # Скорее всего user_id
+                                filter_value = part
+                                filter_type = "target" if len(parts) > 1 else "admin"
+                            else:  # Скорее всего limit
+                                limit = min(int(part), 100)
+                        elif part.startswith("--admin="):
+                            filter_value = part.replace("--admin=", "")
+                            filter_type = "admin"
+                        elif part.startswith("--target="):
+                            filter_value = part.replace("--target=", "")
+                            filter_type = "target"
+
+                    # Если первый параметр не распознан как limit - считаем его фильтром
+                    if parts and not parts[0].isdigit():
+                        filter_value = parts[0]
+                        filter_type = "target"
+                    if len(parts) > 1 and parts[-1].isdigit():
+                        limit = min(int(parts[-1]), 100)
+
+                    # Получаем логи
+                    if filter_type == "admin":
+                        logs = db.get_admin_audit_log(admin_user_id=filter_value, limit=limit)
+                    elif filter_type == "target":
+                        logs = db.get_admin_audit_log(target_user_id=filter_value, limit=limit)
+                    else:
+                        # Если фильтр не указан - показываем логи текущего админа
+                        logs = db.get_admin_audit_log(admin_user_id=user_id, limit=limit)
+
+                    if not logs:
+                        await send_telegram_message(
+                            chat_id,
+                            f"❌ Записи в audit log не найдены"
+                        )
+                        return
+
+                    # Формируем сообщение
+                    log_text = f"""📋 Audit Log (последние {len(logs)} записей)
+
+"""
+                    for log in logs:
+                        action_type = log.get("action_type", "unknown")
+                        target = log.get("target_user_id", "N/A")
+                        old_val = log.get("old_value", "")
+                        new_val = log.get("new_value", "")
+                        created = log.get("created_at", "")[:19] if log.get("created_at") else ""
+                        success = log.get("success", True)
+                        admin_user = log.get("admin_user_id", "unknown")
+                        
+                        # Иконка действия
+                        action_icons = {
+                            "set_level": "🔧",
+                            "remove_level": "⬇️",
+                            "add_user": "➕",
+                            "remove_user": "❌",
+                            "view_history": "👁️",
+                            "maintenance_mode": "🔧"
+                        }
+                        action_icon = action_icons.get(action_type, "📝")
+                        
+                        # Статус
+                        status_icon = "✅" if success else "❌"
+                        
+                        # Детали изменения
+                        change_detail = ""
+                        if old_val and new_val:
+                            change_detail = f"\n   {old_val} → {new_val}"
+                        elif new_val:
+                            change_detail = f"\n   → {new_val}"
+                        
+                        log_text += f"{action_icon} {action_type} {status_icon}\n"
+                        log_text += f"   Админ: {admin_user}\n"
+                        if target != "N/A":
+                            log_text += f"   Цель: {target}{change_detail}\n"
+                        log_text += f"   [{created}]\n\n"
+
+                    if len(logs) >= limit:
+                        log_text += f"...\n\nИспользуйте /admin log [user_id] [limit] для фильтрации"
+
+                    await send_telegram_message(chat_id, log_text)
                     return
 
                 # Админ команда: dialog_stats <user_id> - подробная статистика диалога
@@ -1903,6 +2109,7 @@ async def handle_text_message(chat_id: str, user_id: str, text: str, is_group: b
                 daily_count = limit_info.get('daily_count', 0)
                 daily_limit = limit_info.get('daily_limit', 3)
                 reset_time = limit_info.get('reset_time', 'завтра в 00:00')
+                level = limit_info.get('access_level', 'user')  # Берём уровень из check_generation_limit!
 
                 stats_text = f"""📊 **Ваша статистика**
 
