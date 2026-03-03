@@ -112,6 +112,7 @@ _bot_settings_cache: Dict[str, Any] = {
 ACCESS_LEVELS = {
     "admin": {"daily_limit": -1, "description": "Администратор (безлимит)"},
     "subscriber": {"daily_limit": 5, "description": "Подписчик (5 в день)"},
+    "sub+": {"daily_limit": 30, "description": "Расширенный (30 в день)"},
     "user": {"daily_limit": 3, "description": "Пользователь (3 в день)"}
 }
 
@@ -1793,6 +1794,55 @@ class BotDatabase:
         finally:
             conn.close()
 
+    # ============================================
+    # Методы для работы с платежами (ЮMoney)
+    # ============================================
+
+    def create_payment(self, payment_id: str, user_id: str, chat_id: str, amount: int = 100) -> bool:
+        """Создаёт запись о платеже"""
+        if USE_SUPABASE and supabase:
+            try:
+                supabase.table("payments").insert({
+                    "payment_id": payment_id,
+                    "user_id": user_id,
+                    "chat_id": chat_id,
+                    "amount": amount,
+                    "status": "pending",
+                    "created_at": get_moscow_now().isoformat()
+                }).execute()
+                logger.info(f"💳 Платёж {payment_id} создан для {user_id}")
+                return True
+            except Exception as e:
+                logger.error(f"❌ Ошибка создания платежа: {e}")
+                return False
+        return False
+
+    def get_payment(self, payment_id: str) -> Optional[Dict[str, Any]]:
+        """Получает информацию о платеже"""
+        if USE_SUPABASE and supabase:
+            try:
+                result = supabase.table("payments").select("*").eq("payment_id", payment_id).execute()
+                return result.data[0] if result.data else None
+            except Exception as e:
+                logger.error(f"❌ Ошибка получения платежа: {e}")
+                return None
+        return None
+
+    def update_payment_status(self, payment_id: str, status: str, operation_id: str = None) -> bool:
+        """Обновляет статус платежа"""
+        if USE_SUPABASE and supabase:
+            try:
+                data = {"status": status, "updated_at": get_moscow_now().isoformat()}
+                if operation_id:
+                    data["yoomoney_operation_id"] = operation_id
+                supabase.table("payments").update(data).eq("payment_id", payment_id).execute()
+                logger.info(f"💳 Статус платежа {payment_id} обновлён: {status}")
+                return True
+            except Exception as e:
+                logger.error(f"❌ Ошибка обновления платежа: {e}")
+                return False
+        return False
+
 
 # Глобальный экземпляр
 _db: Optional[BotDatabase] = None
@@ -1804,3 +1854,17 @@ def get_database() -> BotDatabase:
     if _db is None:
         _db = BotDatabase()
     return _db
+
+
+def generate_signature(user_id: str) -> str:
+    """Генерирует HMAC-SHA256 подпись для user_id"""
+    import hmac
+    import hashlib
+    bot_token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+    if not bot_token:
+        logger.warning("⚠️ TELEGRAM_BOT_TOKEN не настроен для генерации подписи")
+        return ""
+    message = user_id.encode('utf-8')
+    key = bot_token.encode('utf-8')
+    signature = hmac.new(key, message, hashlib.sha256).hexdigest()
+    return signature

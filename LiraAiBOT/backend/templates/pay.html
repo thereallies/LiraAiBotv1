@@ -1,0 +1,262 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Оплата подписки sub+</title>
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            padding: 20px;
+        }
+        
+        .container {
+            background: rgba(255, 255, 255, 0.95);
+            border-radius: 24px;
+            padding: 40px 30px;
+            max-width: 400px;
+            width: 100%;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+            text-align: center;
+        }
+        
+        .icon {
+            font-size: 4em;
+            margin-bottom: 20px;
+        }
+        
+        h1 {
+            color: #333;
+            font-size: 1.8em;
+            margin-bottom: 15px;
+            font-weight: 700;
+        }
+        
+        .price {
+            font-size: 2.5em;
+            font-weight: bold;
+            color: #667eea;
+            margin: 20px 0;
+        }
+        
+        .price span {
+            font-size: 0.4em;
+            color: #999;
+        }
+        
+        .description {
+            color: #666;
+            line-height: 1.6;
+            margin: 20px 0;
+            font-size: 1em;
+        }
+        
+        .features {
+            background: #f8f9ff;
+            border-radius: 16px;
+            padding: 20px;
+            margin: 25px 0;
+            text-align: left;
+        }
+        
+        .features h3 {
+            color: #333;
+            font-size: 1.1em;
+            margin-bottom: 15px;
+        }
+        
+        .features ul {
+            list-style: none;
+            padding: 0;
+        }
+        
+        .features li {
+            color: #555;
+            padding: 8px 0;
+            padding-left: 30px;
+            position: relative;
+        }
+        
+        .features li:before {
+            content: "✓";
+            position: absolute;
+            left: 0;
+            color: #4CAF50;
+            font-weight: bold;
+            font-size: 1.2em;
+        }
+        
+        .payment-btn {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            padding: 18px 40px;
+            font-size: 1.2em;
+            font-weight: 600;
+            border-radius: 16px;
+            cursor: pointer;
+            width: 100%;
+            margin-top: 20px;
+            transition: transform 0.2s, box-shadow 0.2s;
+            text-decoration: none;
+            display: inline-block;
+        }
+        
+        .payment-btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 30px rgba(102, 126, 234, 0.4);
+        }
+        
+        .payment-btn:active {
+            transform: translateY(0);
+        }
+        
+        .security {
+            margin-top: 25px;
+            padding-top: 20px;
+            border-top: 1px solid #eee;
+            color: #999;
+            font-size: 0.85em;
+        }
+        
+        .security svg {
+            width: 16px;
+            height: 16px;
+            vertical-align: middle;
+            margin-right: 5px;
+        }
+        
+        .loader {
+            display: none;
+            border: 3px solid #f3f3f3;
+            border-top: 3px solid #667eea;
+            border-radius: 50%;
+            width: 30px;
+            height: 30px;
+            animation: spin 1s linear infinite;
+            margin: 20px auto;
+        }
+        
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        
+        .tg-theme-hint {
+            background: #fff3cd;
+            border: 1px solid #ffc107;
+            border-radius: 8px;
+            padding: 12px;
+            margin: 15px 0;
+            font-size: 0.9em;
+            color: #856404;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="icon">🎨</div>
+        
+        <h1>sub+ Подписка</h1>
+        
+        <div class="price">
+            100 ₽ <span>/ день</span>
+        </div>
+        
+        <div class="tg-theme-hint" id="tg-hint" style="display: none;">
+            ℹ️ Оплата произойдёт в ЮMoney после перехода
+        </div>
+        
+        <p class="description">
+            Получите расширенный лимит генерации изображений и наслаждайтесь творчеством без ограничений!
+        </p>
+        
+        <div class="features">
+            <h3>📋 Что вы получаете:</h3>
+            <ul>
+                <li><strong>30 генераций</strong> изображений в день</li>
+                <li>Приоритетная обработка запросов</li>
+                <li>Доступ ко всем моделям генерации</li>
+                <li>Поддержка развития проекта</li>
+            </ul>
+        </div>
+        
+        <a href="#" class="payment-btn" id="pay-btn" onclick="startPayment()">
+            💳 Оплатить подписку
+        </a>
+        
+        <div class="loader" id="loader"></div>
+        
+        <div class="security">
+            <svg viewBox="0 0 24 24" fill="currentColor">
+                <path d="M12 1L3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5l-9-4zm-2 16l-4-4 1.41-1.41L10 14.17l6.59-6.59L18 9l-8 8z"/>
+            </svg>
+            Безопасная оплата через ЮMoney
+        </div>
+    </div>
+    
+    <script>
+        // Параметры из URL
+        const urlParams = new URLSearchParams(window.location.search);
+        const paymentId = urlParams.get('payment_id');
+        const userId = urlParams.get('user_id');
+        const yoomoneyWallet = "{{ yoomoney_wallet }}";
+        const baseUrl = "{{ base_url }}";
+        
+        // Инициализация Telegram WebApp
+        const tg = window.Telegram.WebApp;
+        tg.ready();
+        tg.expand();
+        
+        // Показываем подсказку если в Telegram
+        if (tg.initDataUnsafe && tg.initDataUnsafe.user) {
+            document.getElementById('tg-hint').style.display = 'block';
+        }
+        
+        // Формируем URL для ЮMoney (прямой перевод)
+        function getYooMoneyUrl() {
+            // Прямая ссылка на перевод
+            return `https://yoomoney.ru/to/4100119485670330`;
+        }
+        
+        // Начинаем оплату
+        function startPayment() {
+            const btn = document.getElementById('pay-btn');
+            const loader = document.getElementById('loader');
+            
+            // Показываем лоадер
+            btn.style.display = 'none';
+            loader.style.display = 'block';
+            
+            // Получаем URL
+            const yoomoneyUrl = getYooMoneyUrl();
+            
+            // Открываем ЮMoney в том же окне
+            setTimeout(() => {
+                window.location.href = yoomoneyUrl;
+            }, 500);
+        }
+        
+        // Закрываем окно после возврата с successURL
+        window.addEventListener('message', function(event) {
+            if (event.data === 'payment-success') {
+                setTimeout(() => {
+                    window.close();
+                }, 2000);
+            }
+        });
+    </script>
+</body>
+</html>

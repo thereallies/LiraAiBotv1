@@ -24,6 +24,9 @@ DATA_DIR = BASE_DIR / "data"
 TEMP_DIR = BASE_DIR / "temp"
 LOGS_DIR = BASE_DIR / "logs"
 
+# Базовый URL для платежного сервера
+BASE_URL = os.environ.get("BASE_URL", "http://localhost:8001")
+
 # Создаем директории, если они не существуют
 for dir_path in [DATA_DIR, TEMP_DIR, LOGS_DIR]:
     dir_path.mkdir(exist_ok=True, parents=True)

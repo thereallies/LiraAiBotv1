@@ -93,10 +93,11 @@ async def handle_callback(
             level_info = {
                 "admin": "👑 Админ (безлимит)",
                 "subscriber": "⭐ Подписчик (5/день)",
+                "sub+": "🚀 sub+ (30/день)",
                 "user": "👤 Пользователь (3/день)"
             }
             level = stats.get('access_level', 'user')
-            
+
             stats_text = f"""📊 **Статистика**
 
 🔑 Уровень: {level_info.get(level, 'Пользователь')}

@@ -537,6 +537,7 @@ async def process_message(message: Dict[str, Any], bot_token: str):
                             level_info = {
                                 "admin": "👑 Администратор (безлимит)",
                                 "subscriber": "⭐ Подписчик (5 в день)",
+                                "sub+": "🚀 sub+ (30 в день)",
                                 "user": "👤 Пользователь (3 в день)"
                             }
                             level = stats.get('access_level', 'user')
@@ -848,6 +849,9 @@ async def process_message(message: Dict[str, Any], bot_token: str):
 • /admin set_level [user_id] [level] - Выдать уровень
 • /admin remove_level [user_id] - Снять уровень
 
+💳 Подтверждение оплаты (ЮMoney):
+• /admin pay_confirm [user_id] - Подтвердить оплату sub+
+
 📢 Рассылка уведомлений:
 • /admin broadcast [сообщение] - Рассылка всем пользователям
 • /admin mes [сообщение] - Короткая команда для рассылки
@@ -861,7 +865,7 @@ async def process_message(message: Dict[str, Any], bot_token: str):
 • /admin log - Последние действия (ваши)
 • /admin log [user_id] [limit] - Логи по пользователю
 • /admin log --admin=[user_id] - Логи администратора
-• /admin stats - Ваша статистика как администратора
+• /admin admin_stats - Ваша статистика как администратора
 
 🔧 Тех.работы:
 • /admin maintenance [HH:MM] - Включить тех.работы
@@ -874,12 +878,14 @@ async def process_message(message: Dict[str, Any], bot_token: str):
 🔑 Уровни доступа:
 • admin - безлимитная генерация
 • subscriber - 5 генераций в день
+• sub+ - 30 генераций в день (оплата 100₽)
 • user - 3 генерации в день
 
 💡 Примеры:
 /admin mes Друзья, Grok недоступен, пользуйтесь OpenRouter
 /admin history 1658547011 50
 /admin dialog_stats 1658547011
+/admin pay_confirm 999888777
 /admin log 1658547011 50
 /admin log --admin=123456789
 /admin set_level 123456789 subscriber
@@ -1347,6 +1353,74 @@ async def process_message(message: Dict[str, Any], bot_token: str):
 💡 Используйте /admin log чтобы увидеть последние действия
 """
                     await send_telegram_message(chat_id, stats_text)
+                    return
+
+                # Админ команда: pay_confirm [user_id] - ручное подтверждение оплаты
+                if text.startswith("/admin pay_confirm "):
+                    from backend.database.users_db import get_database
+                    db = get_database()
+
+                    if not db.is_admin(user_id):
+                        await send_telegram_message(chat_id, "❌ У вас нет прав администратора")
+                        return
+
+                    # Парсим user_id
+                    target_user_id = text.replace("/admin pay_confirm ", "").strip()
+
+                    if not target_user_id or not target_user_id.isdigit():
+                        await send_telegram_message(
+                            chat_id,
+                            "❌ Использование: /admin pay_confirm [user_id]\n\nПример: /admin pay_confirm 999888777"
+                        )
+                        return
+
+                    # Получаем текущий уровень
+                    old_level = db.get_user_access_level(target_user_id)
+
+                    if old_level not in ("user", "subscriber"):
+                        await send_telegram_message(
+                            chat_id,
+                            f"❌ Пользователь {target_user_id} уже имеет уровень {old_level}"
+                        )
+                        return
+
+                    # Повышаем до sub+
+                    if db.set_user_access_level(target_user_id, "sub+"):
+                        # Логируем
+                        db.log_admin_action(
+                            admin_user_id=user_id,
+                            admin_username=username,
+                            action_type="set_level",
+                            target_user_id=target_user_id,
+                            old_value=old_level,
+                            new_value="sub+",
+                            details={"manual_payment_confirm": True},
+                            chat_id=chat_id,
+                            message_id=message_id,
+                            success=True
+                        )
+
+                        await send_telegram_message(
+                            chat_id,
+                            f"✅ Оплата подтверждена!\n\n"
+                            f"Пользователь: {target_user_id}\n"
+                            f"Уровень: {old_level} → sub+\n\n"
+                            f"🎉 Теперь у пользователя 30 генераций в день!"
+                        )
+
+                        # Уведомляем пользователя
+                        try:
+                            await send_telegram_message(
+                                target_user_id,
+                                f"✅ **Оплата подтверждена!**\n\n"
+                                f"Ваш уровень повышен до **sub+**!\n\n"
+                                f"🎉 Теперь у вас **30 генераций изображений в день**!\n\n"
+                                f"Спасибо за поддержку LiraAI! 💜"
+                            )
+                        except Exception as e:
+                            logger.warning(f"⚠️ Не удалось отправить уведомление {target_user_id}: {e}")
+                    else:
+                        await send_telegram_message(chat_id, "❌ Ошибка при повышении уровня")
                     return
 
                 # Админ команда: history <user_id> - история диалога пользователя
@@ -2295,13 +2369,40 @@ async def handle_image_generation(chat_id: str, user_id: str, prompt: str, model
         limit_info = db.check_generation_limit(user_id)
 
         if not limit_info["allowed"]:
-            await send_telegram_message(
-                chat_id,
-                f"❌ Превышен дневной лимит генерации изображений.\n\n"
-                f"Использовано: {limit_info['daily_count']}/{limit_info['daily_limit']}\n"
-                f"Всего: {limit_info['total_count']}\n\n"
-                f"Лимит сбросится: {limit_info['reset_time']}"
-            )
+            # Проверяем можно ли предложить оплату
+            current_level = limit_info.get('access_level', 'user')
+
+            if current_level in ('user', 'subscriber'):
+                # Предлагаем оплату sub+
+                from backend.config import BASE_URL
+                from backend.database.users_db import generate_signature
+                payment_url = f"{BASE_URL}/pay?user_id={user_id}&chat_id={chat_id}&sign={generate_signature(user_id)}"
+
+                # Разное сообщение для user и subscriber
+                if current_level == 'user':
+                    upgrade_text = f"💡 **Оплатите 100₽ и получите уровень sub+ с лимитом 30 генераций в день!**"
+                else:  # subscriber
+                    upgrade_text = f"💡 **Оплатите 100₽ и получите уровень sub+ с лимитом 30 генераций в день (вместо 5)!**"
+
+                buttons = [[{"text": "💳 Оплатить sub+ (100₽)", "url": payment_url}]]
+                await send_telegram_message_with_buttons(
+                    chat_id,
+                    f"❌ Превышен дневной лимит генерации изображений.\n\n"
+                    f"📊 Использовано: **{limit_info['daily_count']}/{limit_info['daily_limit']}**\n"
+                    f"📈 Всего: {limit_info['total_count']}\n\n"
+                    f"{upgrade_text}\n\n"
+                    f"Лимит сбросится: {limit_info['reset_time']}",
+                    buttons
+                )
+            else:
+                # Для других уровней (admin, sub+) просто сообщение
+                await send_telegram_message(
+                    chat_id,
+                    f"❌ Превышен дневной лимит генерации изображений.\n\n"
+                    f"Использовано: {limit_info['daily_count']}/{limit_info['daily_limit']}\n"
+                    f"Всего: {limit_info['total_count']}\n\n"
+                    f"Лимит сбросится: {limit_info['reset_time']}"
+                )
             return
 
         # Получаем модель пользователя (или используем переданную)
@@ -2618,20 +2719,21 @@ async def start_polling_for_bot(token: str, bot_name: str = "Bot"):
                             level_info = {
                                 "admin": "👑 Администратор (безлимит)",
                                 "subscriber": "⭐ Подписчик (5 в день)",
+                                "sub+": "🚀 sub+ (30 в день)",
                                 "user": "👤 Пользователь (3 в день)"
                             }
                             level = stats.get('access_level', 'user')
                             first_name = stats.get('first_name', '')
                             username = stats.get('username', '')
-                            
+
                             name_parts = []
                             if first_name:
                                 name_parts.append(first_name)
                             if username:
                                 name_parts.append(f"@{username}")
-                            
+
                             name = " ".join(name_parts) if name_parts else f"User {callback_user_id}"
-                            
+
                             stats_text = f"""📊 **Ваша статистика**
 
 👤 {name}
