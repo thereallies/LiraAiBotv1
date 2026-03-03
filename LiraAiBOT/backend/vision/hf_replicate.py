@@ -4,11 +4,8 @@ Polza.ai API клиент для генерации изображений.
 """
 import logging
 import os
-import time
 import asyncio
 from typing import Optional, Dict, Any
-from pathlib import Path
-from io import BytesIO
 from dotenv import load_dotenv
 import aiohttp
 
@@ -29,7 +26,7 @@ class HFReplicateClient:
         # Модели для генерации изображений с уровнями доступа
         self.models = {
             "polza-zimage": {
-                "model": "z-image",
+                "model": "tongyi-mai/z-image",
                 "level": "user",
                 "description": "Z-Image (Polza.ai)"
             },
@@ -65,6 +62,7 @@ class HFReplicateClient:
     ) -> Optional[bytes]:
         """
         Генерирует изображение через Polza.ai API (Z-Image)
+        Используем формат из документации Polza.ai
         """
         if not self.api_key:
             logger.error("❌ POLZA_API_KEY не настроен")
@@ -75,7 +73,13 @@ class HFReplicateClient:
             return None
 
         model_info = self.models[model_key]
-        
+
+        # Обрезаем промпт до 1000 символов (лимит Polza.ai Z-Image)
+        max_prompt_length = 1000
+        if len(prompt) > max_prompt_length:
+            prompt = prompt[:max_prompt_length-3] + "..."
+            logger.info(f"✂️ Промпт обрезан до {max_prompt_length} символов")
+
         headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
@@ -85,27 +89,50 @@ class HFReplicateClient:
             logger.info(f"🎨 Polza.ai запрос ({model_key}): {prompt[:50]}...")
 
             async with aiohttp.ClientSession() as session:
-                # Создаем задачу генерации
-                create_url = f"{self.base_url}/image/generations"
+                # Используем /media endpoint из документации Polza.ai
+                create_url = f"{self.base_url}/media"
+                
+                # Формат запроса согласно документации Polza.ai
                 payload = {
                     "model": model_info["model"],
-                    "prompt": prompt,
-                    "n": 1,
-                    "size": "1024x1024",
+                    "input": {
+                        "prompt": prompt,
+                        "aspect_ratio": "1:1",
+                        "images": []  # Пустой массив для text-to-image
+                    }
                 }
 
+                logger.debug(f"📤 Payload: {payload}")
+
                 async with session.post(create_url, json=payload, headers=headers, timeout=aiohttp.ClientTimeout(total=timeout)) as response:
+                    response_text = await response.text()
+                    logger.debug(f"📥 Response status: {response.status}, body: {response_text[:500]}")
+                    
                     if response.status != 200:
-                        error = await response.text()
-                        logger.error(f"❌ Polza.ai ошибка создания: {response.status} - {error}")
+                        logger.error(f"❌ Polza.ai ошибка {response.status}: {response_text}")
                         return None
 
-                    create_data = await response.json()
+                    data = await response.json()
+                    logger.debug(f"📥 Parsed data: {data}")
                     
-                    # Получаем URL изображения из ответа
-                    if "data" in create_data and len(create_data["data"]) > 0:
-                        img_url = create_data["data"][0].get("url")
-                        if img_url:
+                    # Получаем изображение из ответа
+                    # Polza.ai может вернуть по-разному
+                    if "url" in data:
+                        img_url = data["url"]
+                        logger.info(f"✅ Polza.ai изображение готово: {img_url}")
+                        
+                        # Скачиваем изображение
+                        async with session.get(img_url) as img_response:
+                            if img_response.status == 200:
+                                image_data = await img_response.read()
+                                logger.info(f"✅ Polza.ai получено {len(image_data)} байт")
+                                return image_data
+                    
+                    elif "data" in data and len(data["data"]) > 0:
+                        img_data = data["data"][0]
+                        
+                        if "url" in img_data:
+                            img_url = img_data["url"]
                             logger.info(f"✅ Polza.ai изображение готово: {img_url}")
                             
                             # Скачиваем изображение
@@ -114,8 +141,15 @@ class HFReplicateClient:
                                     image_data = await img_response.read()
                                     logger.info(f"✅ Polza.ai получено {len(image_data)} байт")
                                     return image_data
+                        
+                        elif "b64_json" in img_data:
+                            # Base64 изображение
+                            import base64
+                            image_data = base64.b64decode(img_data["b64_json"])
+                            logger.info(f"✅ Polza.ai получено {len(image_data)} байт (base64)")
+                            return image_data
                     
-                    logger.error("❌ Polza.ai не вернул URL изображения")
+                    logger.error(f"❌ Polza.ai не вернул изображение: {data}")
                     return None
 
         except Exception as e:

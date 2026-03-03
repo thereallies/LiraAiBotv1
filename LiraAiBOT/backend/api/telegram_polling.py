@@ -499,22 +499,40 @@ async def process_message(message: Dict[str, Any], bot_token: str):
                     if mode == "generation":
                         db = get_database()
                         user_access_level = db.get_user_access_level(user_id)
+
+                        # Сохраняем запрос пользователя в историю
+                        db.save_dialog_message(user_id, "user", "🎨 Генерация", model="system")
+
                         keyboard = create_image_model_selection_keyboard(user_access_level)
                         await send_telegram_message(
                             chat_id,
-                            f"🎨 **Генерация изображений**\n\n"
-                            f"📊 Твой уровень доступа: **{user_access_level}**\n\n"
-                            f"Выберите модель для генерации:",
+                            f"""🎨 **Генерация изображений**
+
+📊 Твой уровень доступа: **{user_access_level}**
+
+📝 **Требования к описанию:**
+• Максимум: **1000 символов**
+• Язык: русский или английский
+• Подробное описание улучшает результат
+
+💡 **Пример:**
+`Кот в очках сидит на подоконнике, за окном космос, стиль киберпанк, неоновое освещение`
+
+Выберите модель для генерации:""",
                             reply_markup=keyboard
                         )
                         return
 
                     # Для режима stats сразу показываем статистику
                     if mode == "stats":
-                        # Показываем статистику
+                        from backend.database.users_db import get_database
                         db = get_database()
+
+                        # Сохраняем запрос пользователя в историю
+                        db.save_dialog_message(user_id, "user", "📊 Статистика", model="system")
+
                         stats = db.get_user_stats(user_id)
-                        
+
                         if stats:
                             level_info = {
                                 "admin": "👑 Администратор (безлимит)",
@@ -524,33 +542,48 @@ async def process_message(message: Dict[str, Any], bot_token: str):
                             level = stats.get('access_level', 'user')
                             first_name = stats.get('first_name', '')
                             username = stats.get('username', '')
-                            
+
                             name_parts = []
                             if first_name:
                                 name_parts.append(first_name)
                             if username:
                                 name_parts.append(f"@{username}")
-                            
+
                             name = " ".join(name_parts) if name_parts else f"User {user_id}"
-                            
+
+                            # Получаем информацию о лимитах
+                            limit_info = db.check_generation_limit(user_id)
+                            daily_count = limit_info.get('daily_count', 0)
+                            daily_limit = limit_info.get('daily_limit', 3)
+                            reset_time = limit_info.get('reset_time', 'завтра в 00:00')
+
                             stats_text = f"""📊 **Ваша статистика**
 
 👤 {name}
 🔑 Уровень: **{level_info.get(level, 'Пользователь')}**
 
-📈 Генерации:
-• Сегодня: {stats.get('daily_count', 0)}
+📈 Генерации изображений:
+• Сегодня: **{daily_count}/{daily_limit}**
 • Всего: {stats.get('total_count', 0)}
+• Лимит обновится: **{reset_time}**
 
-📅 В боте с: {stats.get('created_at', 'неизвестно')[:10]}"""
+💬 Сообщения в боте:
+• Сегодня: {stats.get('messages_today', 0)}
+
+📅 В боте с: {stats.get('created_at', 'неизвестно')[:10]}
+
+💡 **Совет:** Используйте `/clear` чтобы очистить историю диалога"""
                             await send_telegram_message(chat_id, stats_text)
+                            
+                            # Сохраняем ответ бота в историю
+                            db.save_dialog_message(user_id, "assistant", "Статистика показана", model="system")
                         else:
                             await send_telegram_message(chat_id, "❌ Не удалось получить статистику")
-                        
+
                         # Сбрасываем режим в auto
                         mode_manager.set_mode(user_id, "auto")
                         return
-                    
+
                     # Отправляем подсказку
                     prompt = get_mode_prompt(mode)
                     keyboard = create_main_menu_keyboard()
@@ -794,45 +827,6 @@ async def process_message(message: Dict[str, Any], bot_token: str):
                     await send_telegram_message(chat_id, help_text)
                     return
 
-                # Команда /stats - статистика пользователя
-                if text == "/stats":
-                    from backend.database.users_db import get_database
-                    db = get_database()
-                    stats = db.get_user_stats(user_id)
-                    
-                    if stats:
-                        level_info = {
-                            "admin": "👑 Администратор (безлимит)",
-                            "subscriber": "⭐ Подписчик (5 в день)",
-                            "user": "👤 Пользователь (3 в день)"
-                        }
-                        level = stats.get('access_level', 'user')
-                        first_name = stats.get('first_name', '')
-                        username = stats.get('username', '')
-                        
-                        # Формируем имя
-                        name_parts = []
-                        if first_name:
-                            name_parts.append(first_name)
-                        if username:
-                            name_parts.append(f"@{username}")
-                        
-                        name = " ".join(name_parts) if name_parts else f"User {user_id}"
-                        
-                        stats_text = f"""📊 Ваша статистика
-
-👤 {name}
-🔑 Уровень: {level_info.get(level, 'Пользователь')}
-
-📈 Генерации:
-• Сегодня: {stats.get('daily_count', 0)}
-• Всего: {stats.get('total_count', 0)}
-
-📅 В боте с: {stats.get('created_at', 'неизвестно')[:10]}
-"""
-                        await send_telegram_message(chat_id, stats_text)
-                    return
-
                 # Команда /admin - админ панель
                 if text == "/admin":
                     from backend.database.users_db import get_database
@@ -885,6 +879,59 @@ async def process_message(message: Dict[str, Any], bot_token: str):
 /admin maintenance 17:00
 """
                     await send_telegram_message(chat_id, admin_text)
+                    return
+
+                # Команда /stats - статистика пользователя
+                if text == "/stats":
+                    from backend.database.users_db import get_database
+                    db = get_database()
+
+                    # Принудительно обновляем данные пользователя из БД
+                    stats = db.get_user_stats(user_id)
+
+                    if stats:
+                        level_info = {
+                            "admin": "👑 Администратор (безлимит)",
+                            "subscriber": "⭐ Подписчик (5 в день)",
+                            "user": "👤 Пользователь (3 в день)"
+                        }
+                        level = stats.get('access_level', 'user')
+                        first_name = stats.get('first_name', '')
+                        username = stats.get('username', '')
+
+                        name_parts = []
+                        if first_name:
+                            name_parts.append(first_name)
+                        if username:
+                            name_parts.append(f"@{username}")
+
+                        name = " ".join(name_parts) if name_parts else f"User {user_id}"
+
+                        # Получаем информацию о лимитах
+                        limit_info = db.check_generation_limit(user_id)
+                        daily_count = limit_info.get('daily_count', 0)
+                        daily_limit = limit_info.get('daily_limit', 3)
+                        reset_time = limit_info.get('reset_time', 'завтра в 00:00')
+
+                        stats_text = f"""📊 **Ваша статистика**
+
+👤 {name}
+🔑 Уровень: **{level_info.get(level, 'Пользователь')}**
+
+📈 Генерации изображений:
+• Сегодня: **{daily_count}/{daily_limit}**
+• Всего: {stats.get('total_count', 0)}
+• Лимит обновится: **{reset_time}**
+
+💬 Сообщения в боте:
+• Сегодня: {stats.get('messages_today', 0)}
+
+📅 В боте с: {stats.get('created_at', 'неизвестно')[:10]}
+
+💡 **Совет:** Используйте `/clear` чтобы очистить историю диалога"""
+                        await send_telegram_message(chat_id, stats_text)
+                    else:
+                        await send_telegram_message(chat_id, "❌ Не удалось получить статистику")
                     return
 
                 # Админ команда: maintenance - включить тех.работы
@@ -1143,7 +1190,7 @@ async def process_message(message: Dict[str, Any], bot_token: str):
                     # Отправляем сообщение о начале рассылки
                     await send_telegram_message(
                         chat_id,
-                        f"📢 Начинаю рассылку уведомления {len(all_users)} пользователям...\n\nСообщение: {message[:100]}{'...' if len(message) > 100 else ''}"
+                        f"📢 Начинаю рассылку уведомления {len(all_users)} пользователям...\n\n����ообщение: {message[:100]}{'...' if len(message) > 100 else ''}"
                     )
 
                     # Рассылаем сообщение всем пользователям
@@ -1791,6 +1838,11 @@ async def handle_text_message(chat_id: str, user_id: str, text: str, is_group: b
 
         if mode == "help":
             # В режиме помощи показываем справку
+            db = get_database()
+            
+            # Сохраняем запрос пользователя в историю
+            db.save_dialog_message(user_id, "user", "❓ Помощь", model="system")
+            
             help_text = """ℹ️ **Помощь - LiraAI MultiAssistant**
 
 **Команды:**
@@ -1815,6 +1867,9 @@ async def handle_text_message(chat_id: str, user_id: str, text: str, is_group: b
 
 Бот запоминает последние 10 сообщений вашего диалога!"""
             await send_telegram_message(chat_id, help_text)
+            
+            # Сохраняем ответ бота в историю
+            db.save_dialog_message(user_id, "assistant", "Помощь показана", model="system")
             return
 
         elif mode == "stats":
@@ -2167,11 +2222,11 @@ async def handle_image_generation(chat_id: str, user_id: str, prompt: str, model
             chat_id,
             "❌ Не удалось сгенерировать изображение.\n\n"
             "Возможные причины:\n"
-            "• HF+Replicate: проверьте токен Hugging Face\n"
+            "• Polza.ai: временные неполадки API\n"
             "• Gemini: недоступен в вашем регионе\n\n"
             "Попробуйте:\n"
-            "1. Другую модель (/start → Генерация → Выбор модели)\n"
-            "2. Позже"
+            "1. Позже\n"
+            "2. Другую модель (/start → Генерация → Выбор модели)"
         )
 
     except Exception as e:

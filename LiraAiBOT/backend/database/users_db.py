@@ -601,36 +601,52 @@ class BotDatabase:
                 daily_count = limit_row.get("daily_count", 0)
                 daily_limit = ACCESS_LEVELS.get(access_level, {}).get("daily_limit", 3)
 
-                # Проверяем нужно ли сбросить счетчик
-                today = datetime.now().date()
-                last_reset_str = limit_row.get("last_reset", str(today))
-                
+                # Проверяем нужно ли сбросить счетчик (24 часа с последнего сброса)
+                now = datetime.now()
+                last_reset_str = limit_row.get("last_reset", now.isoformat())
+
                 # Расчет времени сброса лимита
-                reset_time_text = "сегодня в 00:00"
-                
-                # Обработка разных форматов даты из Supabase
+                reset_time_text = ""
+                hours_until_reset = 0
+
+                # Обработка разных форматов даты/времени из Supabase
                 try:
                     if 'T' in last_reset_str:
-                        # ISO формат с временем
-                        last_reset_date = datetime.fromisoformat(last_reset_str.replace('Z', '+00:00')).date()
+                        # ISO формат с временем (2026-03-03T15:30:00)
+                        last_reset_dt = datetime.fromisoformat(last_reset_str.replace('Z', '+00:00'))
+                        # Убираем timezone info для сравнения
+                        if last_reset_dt.tzinfo:
+                            last_reset_dt = last_reset_dt.replace(tzinfo=None)
                     else:
-                        # Просто дата
-                        last_reset_date = datetime.strptime(last_reset_str, "%Y-%m-%d").date() if last_reset_str else today
+                        # Просто дата (2026-03-03) - считаем как начало дня
+                        last_reset_dt = datetime.strptime(last_reset_str, "%Y-%m-%d")
                 except (ValueError, TypeError):
-                    last_reset_date = today
+                    last_reset_dt = now
 
-                if last_reset_date < today:
+                # Проверяем прошло ли 24 часа
+                time_since_reset = now - last_reset_dt
+                hours_since_reset = time_since_reset.total_seconds() / 3600
+
+                if hours_since_reset >= 24:
+                    # Прошло 24 часа - сбрасываем
                     self._reset_daily_limit(user_id)
                     daily_count = 0
-                    reset_time_text = "сегодня в 00:00"
+                    reset_time_text = "сейчас"
+                    hours_until_reset = 24
                 else:
-                    # Лимит сбрасывается завтра в 00:00
-                    tomorrow = today + timedelta(days=1)
-                    reset_time_text = f"завтра в 00:00 ({tomorrow.strftime('%d.%m')})"
+                    # Считаем сколько осталось до сброса
+                    hours_until_reset = 24 - hours_since_reset
+                    hours = int(hours_until_reset)
+                    minutes = int((hours_until_reset - hours) * 60)
+                    
+                    if hours >= 1:
+                        reset_time_text = f"через {hours}ч {minutes}мин"
+                    else:
+                        reset_time_text = f"через {minutes}мин"
 
                 allowed = daily_limit == -1 or daily_count < daily_limit
-                
-                logger.info(f"📊 Проверка лимита {user_id}: daily_count={daily_count}, daily_limit={daily_limit}, allowed={allowed}")
+
+                logger.info(f"📊 Проверка лимита {user_id}: daily_count={daily_count}, daily_limit={daily_limit}, allowed={allowed}, hours_since_reset={hours_since_reset:.1f}")
 
                 return {
                     "allowed": allowed,
@@ -638,7 +654,8 @@ class BotDatabase:
                     "daily_limit": daily_limit,
                     "total_count": limit_row.get("total_count", 0),
                     "reset_time": reset_time_text,
-                    "access_level": access_level
+                    "access_level": access_level,
+                    "hours_until_reset": hours_until_reset
                 }
             except Exception as e:
                 logger.error(f"❌ Ошибка Supabase в check_generation_limit: {e}")
@@ -728,24 +745,54 @@ class BotDatabase:
         """Увеличивает счетчик генераций"""
         if USE_SUPABASE and supabase:
             try:
-                # Проверяем есть ли запись
-                check = supabase.table("generation_limits").select("user_id").eq("user_id", user_id).execute()
-                
-                if not check.data or len(check.data) == 0:
+                # Получаем текущие значения
+                current = supabase.table("generation_limits").select("daily_count, total_count, last_reset").eq("user_id", user_id).execute()
+
+                if not current.data or len(current.data) == 0:
                     # Создаём запись
+                    now = datetime.now().isoformat()
                     supabase.table("generation_limits").insert({
                         "user_id": user_id,
                         "daily_count": 1,
                         "total_count": 1,
-                        "last_reset": datetime.now().date().isoformat()
+                        "last_reset": now  # Сохраняем полное время для 24h отсчета
                     }).execute()
+                    logger.info(f"💾 generation_limits создан: daily_count=1, total_count=1, last_reset={now}")
                 else:
                     # Увеличиваем счетчики
-                    supabase.table("generation_limits").update("""
-                        daily_count = daily_count + 1,
-                        total_count = total_count + 1,
-                        last_reset = CURRENT_DATE
-                    """).eq("user_id", user_id).execute()
+                    row = current.data[0]
+                    new_daily = row.get("daily_count", 0) + 1
+                    new_total = row.get("total_count", 0) + 1
+                    
+                    # Проверяем нужно ли обновить last_reset (если прошло 24 часа)
+                    last_reset_str = row.get("last_reset", "")
+                    now = datetime.now()
+                    
+                    try:
+                        if 'T' in last_reset_str:
+                            last_reset_dt = datetime.fromisoformat(last_reset_str.replace('Z', '+00:00'))
+                            if last_reset_dt.tzinfo:
+                                last_reset_dt = last_reset_dt.replace(tzinfo=None)
+                        else:
+                            last_reset_dt = datetime.strptime(last_reset_str, "%Y-%m-%d")
+                        
+                        hours_since = (now - last_reset_dt).total_seconds() / 3600
+                        
+                        if hours_since >= 24:
+                            # Прошло 24 часа - сбрасываем счетчик и обновляем время
+                            new_daily = 1
+                            new_total = row.get("total_count", 0) + 1
+                            logger.info(f"🔄 Прошло 24 часа ({hours_since:.1f}), сброс daily_count")
+                    except:
+                        pass
+                    
+                    supabase.table("generation_limits").update({
+                        "daily_count": new_daily,
+                        "total_count": new_total,
+                        "last_reset": now.isoformat()  # Сохраняем полное время
+                    }).eq("user_id", user_id).execute()
+                    
+                    logger.info(f"💾 generation_limits обновлён: daily_count={new_daily}, total_count={new_total}")
 
                 # Добавляем запись в историю
                 if prompt:
@@ -756,6 +803,7 @@ class BotDatabase:
 
                 # Инвалидируем кэш
                 invalidate_user_cache(user_id)
+                
                 return
             except Exception as e:
                 logger.error(f"❌ Ошибка Supabase в increment_generation_count: {e}")
