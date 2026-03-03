@@ -81,13 +81,14 @@ def get_limit_status(daily: int, limit: int) -> tuple[str, str]:
 
 def format_stats_card(stats: Dict[str, Any]) -> str:
     """
-    Форматирует статистику пользователя в виде красивой карточки.
+    Форматирует статистику пользователя в виде адаптивной карточки.
+    Без рамки (для мобильных), но с прогресс-баром.
     
     Args:
         stats: Словарь со статистикой пользователя
     
     Returns:
-        Отформатированная строка с карточкой
+        Отформатированная строка
     """
     # Извлекаем данные
     first_name = stats.get('first_name', '')
@@ -109,28 +110,24 @@ def format_stats_card(stats: Dict[str, Any]) -> str:
         name_parts.append(f"@{username}")
     user_name = " ".join(name_parts) if name_parts else "Пользователь"
     
-    # Начинаем формировать карточку
-    text = "┌─────────────────────────────────┐\n"
-    text += "│ 📊 ВАША СТАТИСТИКА              │\n"
-    text += "├─────────────────────────────────┤\n"
-    
-    # Имя пользователя
-    text += f"│ 👤 {user_name:<31} │\n"
-    
     # Уровень с эмодзи
     level_emoji = LEVEL_EMOJI.get(access_level, "👤")
     level_desc = LEVEL_DESCRIPTIONS.get(access_level, "Пользователь")
-    text += f"│ {level_emoji} {level_desc:<29} │\n"
     
-    text += "│                                 │\n"
+    # Начинаем формировать текст (без рамки!)
+    text = f"📊 **ВАША СТАТИСТИКА**\n\n"
+    
+    # Основная информация
+    text += f"👤 {user_name}\n"
+    text += f"{level_emoji} {level_desc}\n\n"
     
     # Прогресс-бар генераций
-    text += "│ 📈 Генерации изображений:       │\n"
+    text += f"📈 **Генерации изображений:**\n"
     
     if daily_limit <= 0 or daily_limit == -1:
         # Безлимит
         bar = "█" * 20
-        text += f"│ ├─ Сегодня: {bar} ∞ │\n"
+        text += f"   {bar} ∞ Безлимит\n"
     else:
         # Создаём прогресс-бар
         percentage = min(daily_count / daily_limit, 1.0)
@@ -138,31 +135,22 @@ def format_stats_card(stats: Dict[str, Any]) -> str:
         bar = "█" * filled + "░" * (20 - filled)
         
         status_icon, _ = get_limit_status(daily_count, daily_limit)
-        text += f"│ ├─ Сегодня: {bar} {status_icon} │\n"
+        text += f"   {bar} {status_icon}\n"
+        text += f"   Сегодня: `{daily_count}/{daily_limit}` ({percentage:.0%})\n"
     
-    text += f"│ └─ Всего: {total_count:<25} │\n"
+    text += f"   Всего: `{total_count}`\n\n"
     
-    text += "│                                 │\n"
-    
-    # Сообщения
-    text += f"│ 💬 Сообщения в боте:            │\n"
-    text += f"│   • Сегодня: {messages_today:<22} │\n"
+    # Дополнительно
+    text += f"💬 **Сообщения в боте:**\n"
+    text += f"   • Сегодня: `{messages_today}`\n\n"
     
     # Дата регистрации
     if created_at:
         try:
-            # Пытаемся распарсить дату
-            if 'T' in created_at:
-                date_str = created_at[:10]
-            else:
-                date_str = created_at[:10]
-            text += f"│   • В боте с: {date_str:<21} │\n"
+            date_str = created_at[:10] if 'T' in created_at else created_at[:10]
+            text += f"📅 **В боте с:** {date_str}"
         except:
-            text += f"│   • В боте с: {created_at[:10]:<21} │\n"
-    else:
-        text += "│   • В боте с: N/A                   │\n"
-    
-    text += "└─────────────────────────────────┘"
+            text += f"📅 **В боте с:** {created_at[:10]}"
     
     return text
 
