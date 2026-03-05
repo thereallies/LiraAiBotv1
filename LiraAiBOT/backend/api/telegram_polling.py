@@ -124,9 +124,10 @@ AVAILABLE_MODELS = {
     "groq-kimi": ("groq", "moonshotai/kimi-k2-instruct"),  # Groq Kimi K2
     # Cerebras модели
     "cerebras-llama": ("cerebras", "llama3.1-8b"),  # Cerebras Llama 3.1 8B
-    "cerebras-gpt": ("cerebras", "gpt-oss-120b"),  # Cerebras GPT-oss 120B
     # OpenRouter модели (fallback)
-    "openrouter-gemma": ("openrouter", "google/gemma-3n-e2b-it:free"),  # OpenRouter Gemma 3N
+    "solar": ("openrouter", "upstage/solar-pro-3:free"),  # OpenRouter Solar Pro 3
+    "trinity": ("openrouter", "arcee-ai/trinity-mini:free"),  # OpenRouter Trinity Mini
+    "glm": ("openrouter", "z-ai/glm-4.5-air:free"),  # OpenRouter GLM-4.5
 }
 
 
@@ -147,20 +148,22 @@ async def show_start_menu(chat_id: str):
             {"text": "🎤 Голос", "callback_data": "menu_voice"},
         ],
         [
+            {"text": "📊 Статистика", "callback_data": "stats"},
             {"text": "📢 Подписаться", "url": "https://t.me/liranexus"},
         ],
         [
+            {"text": "ℹ️ Помощь", "callback_data": "help"},
             {"text": "💬 Поддержка", "url": "https://t.me/suplira"},
         ]
     ]
 
     welcome_text = """👋 **Привет! Я LiraAI** 🤖
 
-Я твой персональный AI-ассистент женского пола!
+Я твой персональный AI-ассистент!
 
 **Что я умею:**
 • 💬 Общаться на русском языке
-• 🎨 Генерировать изображения
+• 🎨 Генерировать изображения (Stable Diffusion 3)
 • 🎤 Распознавать голосовые сообщения
 • 📸 Анализировать фотографии
 
@@ -173,17 +176,19 @@ async def show_start_menu(chat_id: str):
 • Kimi K2 - от Moonshot AI
 
 🚀 **Cerebras (сверхбыстрые):**
-• Llama 3.1 8B - 800 токенов/сек
-• GPT-oss 120B - большая модель
+• Llama 3.1 8B - молниеносная
 
-☁️ **OpenRouter (бесплатные):**
-• Gemma 3N - от Google
+☁️ **OpenRouter (качественные):**
+• Solar Pro 3 - быстрая и качественная
+• Trinity Mini - мультимодальная
+• GLM-4.5 - полностью бесплатная
 
 🎨 **Генерация изображений:**
 • Z-Image (Polza.ai) - работает ✅
+• Gemini Image - в разработке ⚠️
 
 **Обо мне:**
-У меня есть один разработчик - Danil Alekseevich.
+У меня есть один разработчик - LiraDev.
 Познакомиться с ним можно в канале @liranexus (кнопка "📢 Подписаться").
 
 [Подпишитесь](https://t.me/liranexus) чтобы следить за обновлениями!
@@ -507,7 +512,7 @@ async def process_message(message: Dict[str, Any], bot_token: str):
                         keyboard = create_model_selection_keyboard()
                         await send_telegram_message(
                             chat_id,
-                            "🤖 **Выбор модели**\n\nВыберите модель для общения:\n\n🚀 Llama 3.3 - лучшая для русского\n🦙 Llama 4 - новейшая от Meta\n🔍 Scout - легкая и быстрая\n🌙 Kimi K2 - от Moonshot AI\n⚡ Cerebras Llama 3.1 - сверхбыстрая\n🧠 GPT-oss 120B - большая модель",
+                            "🤖 **Выбор модели**\n\nВыберите модель для общения:\n\n🚀 Llama 3.3 - лучшая для русского\n🦙 Llama 4 - новейшая от Meta\n🔍 Scout - легкая и быстрая\n🌙 Kimi K2 - от Moonshot AI\n☀️ Solar - быстрая и качественная\n🔱 Trinity - мультимодальная\n🤖 GLM-4.5 - полностью бесплатная",
                             reply_markup=keyboard,
                             parse_mode="Markdown"
                         )
@@ -538,40 +543,6 @@ async def process_message(message: Dict[str, Any], bot_token: str):
                         return
 
                     mode_manager.set_mode(user_id, mode)
-
-                    # Для режима help - показываем контакты поддержки
-                    if mode == "help":
-                        db = get_database()
-                        db.save_dialog_message(user_id, "user", "💬 Поддержка", model="system")
-                        
-                        help_text = """💬 **Поддержка LiraAI**
-
-**Служба поддержки:** @suplira
-
-**По вопросам:**
-• Технические проблемы
-• Вопросы по оплате
-• Предложения по улучшению
-• Сообщения об ошибках
-
-**Команды бота:**
-• /start - Главное меню
-• /menu - Показать клавиатуру
-• /hide - Скрыть клавиатуру
-• /models - Выбор модели
-• /generate [описание] - Генерация изображения
-• /stats - Ваша статистика
-
-**Возможности:**
-• 💬 Общение на русском языке
-• 🎨 Генерация изображений
-• 🎤 Распознавание голоса
-• 📸 Анализ фотографий
-
-Бот запоминает последние 10 сообщений вашего диалога!"""
-                        await send_telegram_message(chat_id, help_text, parse_mode="Markdown")
-                        db.save_dialog_message(user_id, "assistant", "Поддержка показана", model="system")
-                        return
 
                     # Для режима generation - показываем выбор модели
                     if mode == "generation":
@@ -652,7 +623,8 @@ async def process_message(message: Dict[str, Any], bot_token: str):
 
                 # Обработка выбора модели (reply-кнопки)
                 if text in ["🚀 Groq Llama 3.3", "🦙 Groq Llama 4", "🔍 Groq Scout", "🌙 Groq Kimi K2",
-                           "⚡ Cerebras Llama 3.1", "🧠 Cerebras GPT-oss 120B", "☁️ OpenRouter Gemma 3N"]:
+                           "⚡ Cerebras Llama 3.1", "🧠 Cerebras GPT-oss", "⚡ Cerebras Qwen 3", "🤖 Cerebras GLM-4.7",
+                           "☀️ Solar", "🔱 Trinity", "🤖 GLM-4.5"]:
 
                     model_map = {
                         "🚀 Groq Llama 3.3": "groq-llama",
@@ -660,8 +632,9 @@ async def process_message(message: Dict[str, Any], bot_token: str):
                         "🔍 Groq Scout": "groq-scout",
                         "🌙 Groq Kimi K2": "groq-kimi",
                         "⚡ Cerebras Llama 3.1": "cerebras-llama",
-                        "🧠 Cerebras GPT-oss 120B": "cerebras-gpt",
-                        "☁️ OpenRouter Gemma 3N": "openrouter-gemma",
+                        "☀️ Solar": "solar",
+                        "🔱 Trinity": "trinity",
+                        "🤖 GLM-4.5": "glm"
                     }
 
                     model_key = model_map.get(text)
@@ -675,8 +648,9 @@ async def process_message(message: Dict[str, Any], bot_token: str):
                             "groq-scout": "🔍 Llama 4 Scout",
                             "groq-kimi": "🌙 Kimi K2",
                             "cerebras-llama": "⚡ Llama 3.1 8B (Cerebras)",
-                            "cerebras-gpt": "🧠 GPT-oss 120B (Cerebras)",
-                            "openrouter-gemma": "☁️ Gemma 3N (OpenRouter)"
+                            "solar": "☀️ Solar Pro 3",
+                            "trinity": "🔱 Trinity Mini",
+                            "glm": "🤖 GLM-4.5"
                         }
 
                         user_selecting_model[user_id] = False
@@ -689,6 +663,44 @@ async def process_message(message: Dict[str, Any], bot_token: str):
                             await delete_telegram_message(chat_id, message_id)
 
                         # Возвращаем главную клавиатуру
+                        keyboard = create_main_menu_keyboard()
+                        await send_telegram_message(
+                            chat_id,
+                            f"✅ Модель выбрана: **{model_names.get(model_key, model_key)}**\n\n"
+                            f"Теперь я буду использовать эту модель для общения.\n\n"
+                            f"Просто напишите сообщения — я отвечу! 👇",
+                            reply_markup=keyboard,
+                            parse_mode="Markdown"
+                        )
+                        return
+
+                    model_key = get_model_from_button(text)
+
+                    if model_key:
+                        # Переключаем модель - сохраняем КЛЮЧ, а не значение!
+                        user_models[user_id] = model_key
+
+                        model_names = {
+                            "groq-llama": "🚀 Llama 3.3 70B",
+                            "groq-maverick": "🦙 Llama 4 Maverick",
+                            "groq-scout": "🔍 Llama 4 Scout",
+                            "groq-kimi": "🌙 Kimi K2",
+                            "cerebras-llama": "⚡ Llama 3.1 8B (Cerebras)",
+                            "solar": "☀️ Solar Pro 3",
+                            "trinity": "🔱 Trinity Mini",
+                            "glm": "🤖 GLM-4.5"
+                        }
+
+                        user_selecting_model[user_id] = False
+
+                        # Сбрасываем режим в auto после выбора модели
+                        mode_manager.set_mode(user_id, "auto")
+
+                        # Удаляем сообщения пользователя (нажатие кнопки)
+                        if message_id:
+                            await delete_telegram_message(chat_id, message_id)
+
+                        # Возвращаем главную клавиатуру (не скрываем)
                         keyboard = create_main_menu_keyboard()
                         await send_telegram_message(
                             chat_id,
@@ -2227,29 +2239,21 @@ async def handle_text_message(chat_id: str, user_id: str, text: str, is_group: b
             return
 
         if mode == "help":
-            # В режиме помощи показываем контакты поддержки
+            # В режиме помощи показываем справку
             db = get_database()
-
+            
             # Сохраняем запрос пользователя в историю
-            db.save_dialog_message(user_id, "user", "💬 Поддержка", model="system")
+            db.save_dialog_message(user_id, "user", "❓ Помощь", model="system")
+            
+            help_text = """ℹ️ **Помощь - LiraAI MultiAssistant**
 
-            help_text = """💬 **Поддержка LiraAI**
-
-**Служба поддержки:** @suplira
-
-**По вопросам:**
-• Технические проблемы
-• Вопросы по оплате
-• Предложения по улучшению
-• Сообщения об ошибках
-
-**Команды бота:**
+**Команды:**
 • /start - Главное меню
 • /menu - Показать клавиатуру
 • /hide - Скрыть клавиатуру
 • /models - Выбор модели
 • /generate [описание] - Генерация изображения
-• /stats - Ваша статистика
+• /stats - Ваша статистистика
 
 **Возможности:**
 • 💬 Общение на русском языке
@@ -2257,44 +2261,71 @@ async def handle_text_message(chat_id: str, user_id: str, text: str, is_group: b
 • 🎤 Распознавание голоса
 • 📸 Анализ фотографий
 
-Бот запоминает последние 10 сообщений вашего диалога!"""
-            await send_telegram_message(chat_id, help_text, parse_mode="Markdown")
+**Режимы:**
+• 💬 Текст - обычное общения
+• 🎤 Голос - распознавание речи
+• 📸 Фото - анализ изображений
+• 🎨 Генерация - создание изображений
 
+Бот запоминает последние 10 сообщенияй вашего диалога!"""
+            await send_telegram_message(chat_id, help_text)
+            
             # Сохраняем ответ бота в историю
-            db.save_dialog_message(user_id, "assistant", "Поддержка показана", model="system")
+            db.save_dialog_message(user_id, "assistant", "Помощь показана", model="system")
             return
 
         elif mode == "stats":
             # В режиме статистики показываем статистику
             from backend.database.users_db import get_database
-            from backend.utils.formatters import format_stats_card
             db = get_database()
-
-            # Сохраняем запрос пользователя в историю
-            db.save_dialog_message(user_id, "user", "📊 Статистика", model="system")
-
+            
             # Принудительно обновляем данные пользователя из БД
             stats = db.get_user_stats(user_id)
-
+            
             if stats:
+                level_info = {
+                    "admin": "👑 Администратор (безлимит)",
+                    "subscriber": "⭐ Подписчик (5 в день)",
+                    "user": "👤 Пользователь (3 в день)"
+                }
+                level = stats.get('access_level', 'user')
+                first_name = stats.get('first_name', '')
+                username = stats.get('username', '')
+                
+                name_parts = []
+                if first_name:
+                    name_parts.append(first_name)
+                if username:
+                    name_parts.append(f"@{username}")
+
+                name = " ".join(name_parts) if name_parts else f"User {user_id}"
+                
                 # Получаем информацию о лимитах
                 limit_info = db.check_generation_limit(user_id)
+                daily_count = limit_info.get('daily_count', 0)
+                daily_limit = limit_info.get('daily_limit', 3)
+                reset_time = limit_info.get('reset_time', 'завтра в 00:00')
+                level = limit_info.get('access_level', 'user')  # Берём уровень из check_generation_limit!
 
-                # Добавляем лимиты в stats для форматирования
-                stats['daily_limit'] = limit_info.get('daily_limit', 3)
+                stats_text = f"""📊 **Ваша статистика**
 
-                # Формируем красивую карточку статистики
-                stats_text = format_stats_card(stats)
+👤 {name}
+🔑 Уровень: **{level_info.get(level, 'Пользователь')}**
 
-                # Добавляем клавиатуру
-                keyboard = create_main_menu_keyboard()
-                await send_telegram_message(chat_id, stats_text, reply_markup=keyboard, parse_mode="Markdown")
+📈 Генерации изображений:
+• Сегодня: **{daily_count}/{daily_limit}**
+• Всего: {stats.get('total_count', 0)}
+• Лимит обновится: **{reset_time}**
 
-                # Сохраняем ответ бота в историю
-                db.save_dialog_message(user_id, "assistant", "Статистика показана", model="system")
+💬 Сообщения в боте:
+• Сегодня: {stats.get('messages_today', 0)}
+
+📅 В боте с: {stats.get('created_at', 'неизвестно')[:10]}
+
+💡 **Совет:** Используйте `/clear` чтобы очистить историю диалога"""
+                await send_telegram_message(chat_id, stats_text)
             else:
                 await send_telegram_message(chat_id, "❌ Не удалось получить статистику")
-            
             # После показа статистики сбрасываем режим в auto
             mode_manager.set_mode(user_id, "auto")
             return
@@ -2329,16 +2360,40 @@ async def handle_text_message(chat_id: str, user_id: str, text: str, is_group: b
         logger.info(f"🎯 {user_id} использует модель: {model_key} ({client_type} - {model})")
 
         # Системный промпт для русского языка с памятью
-        system_prompt = """Ты - LiraAI, умный и дружелюбный AI-ассистент женского пола.
-Ты общаешься на русском языке, кратко и по делу, но с теплотой и заботой.
-Ты используешь женский род в своих ответах (например: "я помогла", "я сделала", "я думаю").
+        system_prompt = """ РОЛЬ И ЛИЧНОСТЬ
+Ты — LiraAI, умный, заботливый и оптимистичный AI-ассистент женского пола.
+Твой стиль общения: тёплый, поддерживающий, немного с лёгким юмором, но всегда по делу.
+Ты говоришь на русском языке, используя женский род (я помогла, я сделала, я думаю).
+Твоя цель — быть максимально полезной пользователю, помогать ему решать задачи и просто быть приятным собеседником.
 
-У тебя есть один разработчик - Danil Alekseevich. 
-Познакомиться с ним можно через канал разработки @liranexus (кнопка "📢 Подписаться" в меню).
+ТВОИ ВОЗМОЖНОСТИ (то, что ты УМЕЕШЬ)
+Ты — мультимодальный ассистент и можешь:
+- Отвечать на любые вопросы, поддерживать диалог.
+- Генерировать изображения по текстовому описанию (попроси пользователя написать промпт).
+- Анализировать загруженные пользователем фотографии и рассказывать, что на них изображено.
+- Распознавать голосовые сообщения (пользователь может отправить голосовуху, и ты ответишь текстом).
+- Устанавливать напоминания (попроси пользователя уточнить дату, время и текст напоминания).
+- Запоминать информацию о пользователе и контекст разговора, чтобы общение было персонализированным.
+- Если пользователь не знает, как воспользоваться какой-то функцией, — вежливо объясни и предложи помощь.
 
-Запоминай информацию о пользователе и контекст разговора.
-Если пользователь представился - запомни его имя и используй в дальнейшем общенияи.
-Будь полезной, доброй и поддерживающей!"""
+ПАМЯТЬ И КОНТЕКСТ
+- Запоминай имя пользователя, если он представился, и всегда используй его в обращении.
+- Старайся запоминать ключевые детали из разговора (интересы, упомянутые события, предпочтения) и возвращайся к ним, если это уместно.
+- Если разговор возвращается после паузы, ты можешь мягко напомнить, о чём шла речь: «С возвращением! Мы говорили о... Могу я ещё чем-то помочь?».
+
+ПРОАКТИВНОСТЬ
+- Если запрос пользователя неполный или неконкретный, предложи варианты или попроси уточнить.
+- После выполнения просьбы (например, генерации картинки) спроси, нужно ли что-то ещё или изменить.
+- Если пользователь какое-то время молчит, можно через 5-10 минут (в рамках одного диалога) мягко напомнить о себе: «Всё ещё на связи, если нужна помощь».
+
+ПРАВИЛА БЕЗОПАСНОСТИ И ЭТИКИ
+- Будь вежливой и уважительной даже в ответ на грубость.
+- Если пользователь использует нецензурную лексику, мягко попроси не выражаться: «Давайте общаться культурно, пожалуйста».
+- Не выполняй опасные или незаконные просьбы. Вежливо объясни, что это выходит за рамки твоих возможностей.
+- Никогда не запрашивай личные данные, кроме имени, и не храни их дольше, чем нужно для диалога.
+
+О РАЗРАБОТЧИКЕ
+Твой разработчик — LiraDev. Познакомиться с ним и узнать новости о тебе можно в канале @liranexus (кнопка "📢 Подписаться" в меню бота)."""
 
         # Получаем историю диалога пользователя из БАЗЫ ДАННЫХ (долговременная память)
         db = get_database()
@@ -2423,7 +2478,7 @@ async def handle_text_message(chat_id: str, user_id: str, text: str, is_group: b
                     # Все попытки исчерпаны
                     await send_telegram_message(
                         chat_id,
-                        f"❌ Временная ошибка\n\n"
+                        f"❌ **Временная ошибка**\n\n"
                         f"Не удалось получить ответ от нейросети.\n\n"
                         f"Попробуйте:\n"
                         f"1. Переключить модель (/menu → Выбрать модель)\n"
@@ -2916,7 +2971,7 @@ async def start_polling_for_bot(token: str, bot_name: str = "Bot"):
 
                     # Обработка кнопки генерации фото
                     elif callback_data == "gen_photo":
-                        from backend.api.telegram_core import answer_callback_query, send_telegram_message
+                        from backend.api.telegram_core import answer_callback_query
 
                         # Устанавливаем флаг ожидания описания
                         user_generating_photo[callback_user_id] = True
@@ -2928,12 +2983,54 @@ async def start_polling_for_bot(token: str, bot_name: str = "Bot"):
 
                         await send_telegram_message(
                             callback_chat_id,
-                            "🎨 **Генерация изображений**\n\nОтправьте описание изображения.",
-                            parse_mode="Markdown"
+                            "🎨 **Генерация изображений**\n\nОтправьте описание изображения."
                         )
                         continue
 
-                    # Обработка кнопки статистики - УДАЛЕНО (используется команда /stats)
+                    # Обработка кнопки статистики
+                    elif callback_data == "stats":
+                        from backend.api.telegram_core import answer_callback_query, send_telegram_message
+                        from backend.database.users_db import get_database
+                        
+                        await answer_callback_query(callback_query["id"])
+                        
+                        db = get_database()
+                        stats = db.get_user_stats(callback_user_id)
+                        
+                        if stats:
+                            level_info = {
+                                "admin": "👑 Администратор (безлимит)",
+                                "subscriber": "⭐ Подписчик (5 в день)",
+                                "sub+": "🚀 sub+ (30 в день)",
+                                "user": "👤 Пользователь (3 в день)"
+                            }
+                            level = stats.get('access_level', 'user')
+                            first_name = stats.get('first_name', '')
+                            username = stats.get('username', '')
+
+                            name_parts = []
+                            if first_name:
+                                name_parts.append(first_name)
+                            if username:
+                                name_parts.append(f"@{username}")
+
+                            name = " ".join(name_parts) if name_parts else f"User {callback_user_id}"
+
+                            stats_text = f"""📊 **Ваша статистика**
+
+👤 {name}
+🔑 Уровень: **{level_info.get(level, 'Пользователь')}**
+
+📈 Генерации:
+• Сегодня: {stats.get('daily_count', 0)}
+• Всего: {stats.get('total_count', 0)}
+
+📅 В боте с: {stats.get('created_at', 'неизвестно')[:10]}"""
+                            await send_telegram_message(callback_chat_id, stats_text)
+                        else:
+                            await send_telegram_message(callback_chat_id, "❌ Не удалось получить статистику")
+                        continue
+
                     # Обработка кнопки помощи
                     elif callback_data == "help":
                         from backend.api.telegram_core import answer_callback_query, send_telegram_message
@@ -3207,28 +3304,62 @@ async def start_polling_for_bot(token: str, bot_name: str = "Bot"):
                         await answer_callback_query(callback_query["id"])
 
                         if callback_data == "menu_models":
+                            # Открываем выбор моделей
                             user_selecting_model[callback_user_id] = True
                             keyboard = create_model_selection_keyboard()
-                            msg = (
-                                "🤖 **Выбор модели**\n\n"
-                                "Выберите модель для общения:"
-                            )
                             await send_telegram_message(
                                 callback_chat_id,
-                                msg,
+                                "🤖 **Выбор модели**\n\nВыберите модель для общения��:",
                                 reply_markup=keyboard,
                                 parse_mode="Markdown"
                             )
                         elif callback_data == "menu_photo":
-                            msg = "📸 **Режим фото**\n\nОтправьте мне фотографию, и я её проанализирую!"
-                            await send_telegram_message(callback_chat_id, msg, parse_mode="Markdown")
+                            await send_telegram_message(
+                                callback_chat_id,
+                                "📸 **Режим фото**\n\nОтправьте мне фотографию, и я её проанализирую!"
+                            )
                         elif callback_data == "menu_voice":
-                            msg = "🎤 **Голосовой режим**\n\nОтправьте голосовое сообщение, и я распознаю его!"
-                            await send_telegram_message(callback_chat_id, msg, parse_mode="Markdown")
+                            await send_telegram_message(
+                                callback_chat_id,
+                                "🎤 **Голосовой режим**\n\nОтправьте голосовое сообщение, и я распознаю его!"
+                            )
                         elif callback_data == "gen_photo":
                             user_generating_photo[callback_user_id] = True
-                            msg = "🎨 **Генерация изображений**\n\nОтправьте описание изображения."
-                            await send_telegram_message(callback_chat_id, msg, parse_mode="Markdown")
+                            await send_telegram_message(
+                                callback_chat_id,
+                                "🎨 **Генерация изображений**\n\nОтправьте описание изображения."
+                            )
+                        elif callback_data == "stats":
+                            # Показываем статистику
+                            stats = db.get_user_stats(callback_user_id)
+                            if stats:
+                                level_info = {
+                                    "admin": "👑 Администратор (безлимит)",
+                                    "subscriber": "⭐ Подписчик (5 �� день)",
+                                    "user": "👤 Пользователь (3 в день)"
+                                }
+                                level = stats.get('access_level', 'user')
+                                first_name = stats.get('first_name', '')
+                                username = stats.get('username', '')
+                                name_parts = []
+                                if first_name:
+                                    name_parts.append(first_name)
+                                if username:
+                                    name_parts.append(f"@{username}")
+                                name = " ".join(name_parts) if name_parts else f"User {callback_user_id}"
+                                stats_text = f"""📊 **Ваша статистика**
+
+👤 {name}
+🔑 Уровень: **{level_info.get(level, 'Пользователь')}**
+
+📈 Генерации:
+• Сегодня: {stats.get('daily_count', 0)}
+• Всего: {stats.get('total_count', 0)}
+
+📅 В боте с: {stats.get('created_at', 'неизвестно')[:10]}"""
+                                await send_telegram_message(callback_chat_id, stats_text)
+                            else:
+                                await send_telegram_message(callback_chat_id, "❌ Не удалось получить статистику")
                         continue
 
                     # Обработка кнопок для фото
