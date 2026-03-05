@@ -124,10 +124,9 @@ AVAILABLE_MODELS = {
     "groq-kimi": ("groq", "moonshotai/kimi-k2-instruct"),  # Groq Kimi K2
     # Cerebras модели
     "cerebras-llama": ("cerebras", "llama3.1-8b"),  # Cerebras Llama 3.1 8B
-    # OpenRouter модели (fallback)
-    "solar": ("openrouter", "upstage/solar-pro-3:free"),  # OpenRouter Solar Pro 3
-    "trinity": ("openrouter", "arcee-ai/trinity-mini:free"),  # OpenRouter Trinity Mini
-    "glm": ("openrouter", "z-ai/glm-4.5-air:free"),  # OpenRouter GLM-4.5
+    "cerebras-gpt": ("cerebras", "gpt-oss-120b"),  # Cerebras GPT-oss 120B
+    # OpenRouter модели
+    "openrouter-gemma": ("openrouter", "google/gemma-3n-e2b-it:free"),  # OpenRouter Gemma 3N
 }
 
 
@@ -163,7 +162,7 @@ async def show_start_menu(chat_id: str):
 
 **Что я умею:**
 • 💬 Общаться на русском языке
-• 🎨 Генерировать изображения (Stable Diffusion 3)
+• 🎨 Генерировать изображения
 • 🎤 Распознавать голосовые сообщения
 • 📸 Анализировать фотографии
 
@@ -176,19 +175,17 @@ async def show_start_menu(chat_id: str):
 • Kimi K2 - от Moonshot AI
 
 🚀 **Cerebras (сверхбыстрые):**
-• Llama 3.1 8B - молниеносная
+• Llama 3.1 8B - 800 токенов/сек
+• GPT-oss 120B - большая модель
 
-☁️ **OpenRouter (качественные):**
-• Solar Pro 3 - быстрая и качественная
-• Trinity Mini - мультимодальная
-• GLM-4.5 - полностью бесплатная
+☁️ **OpenRouter (бесплатные):**
+• Gemma 3N - от Google
 
 🎨 **Генерация изображений:**
 • Z-Image (Polza.ai) - работает ✅
-• Gemini Image - в разработке ⚠️
 
 **Обо мне:**
-У меня есть один разработчик - LiraDev.
+У меня есть один разработчик - Danil Alekseevich.
 Познакомиться с ним можно в канале @liranexus (кнопка "📢 Подписаться").
 
 [Подпишитесь](https://t.me/liranexus) чтобы следить за обновлениями!
@@ -512,7 +509,7 @@ async def process_message(message: Dict[str, Any], bot_token: str):
                         keyboard = create_model_selection_keyboard()
                         await send_telegram_message(
                             chat_id,
-                            "🤖 **Выбор модели**\n\nВыберите модель для общения:\n\n🚀 Llama 3.3 - лучшая для русского\n🦙 Llama 4 - новейшая от Meta\n🔍 Scout - легкая и быстрая\n🌙 Kimi K2 - от Moonshot AI\n☀️ Solar - быстрая и качественная\n🔱 Trinity - мультимодальная\n🤖 GLM-4.5 - полностью бесплатная",
+                            "🤖 **Выбор модели**\n\nВыберите модель для общения:\n\n🚀 Llama 3.3 - лучшая для русского\n🦙 Llama 4 - новейшая от Meta\n🔍 Scout - легкая и быстрая\n🌙 Kimi K2 - от Moonshot AI\n⚡ Cerebras Llama 3.1 - сверхбыстрая\n🧠 GPT-oss 120B - большая модель",
                             reply_markup=keyboard,
                             parse_mode="Markdown"
                         )
@@ -623,8 +620,7 @@ async def process_message(message: Dict[str, Any], bot_token: str):
 
                 # Обработка выбора модели (reply-кнопки)
                 if text in ["🚀 Groq Llama 3.3", "🦙 Groq Llama 4", "🔍 Groq Scout", "🌙 Groq Kimi K2",
-                           "⚡ Cerebras Llama 3.1", "🧠 Cerebras GPT-oss", "⚡ Cerebras Qwen 3", "🤖 Cerebras GLM-4.7",
-                           "☀️ Solar", "🔱 Trinity", "🤖 GLM-4.5"]:
+                           "⚡ Cerebras Llama 3.1", "🧠 Cerebras GPT-oss 120B", "☁️ OpenRouter Gemma 3N"]:
 
                     model_map = {
                         "🚀 Groq Llama 3.3": "groq-llama",
@@ -632,9 +628,8 @@ async def process_message(message: Dict[str, Any], bot_token: str):
                         "🔍 Groq Scout": "groq-scout",
                         "🌙 Groq Kimi K2": "groq-kimi",
                         "⚡ Cerebras Llama 3.1": "cerebras-llama",
-                        "☀️ Solar": "solar",
-                        "🔱 Trinity": "trinity",
-                        "🤖 GLM-4.5": "glm"
+                        "🧠 Cerebras GPT-oss 120B": "cerebras-gpt",
+                        "☁️ OpenRouter Gemma 3N": "openrouter-gemma",
                     }
 
                     model_key = model_map.get(text)
@@ -648,9 +643,8 @@ async def process_message(message: Dict[str, Any], bot_token: str):
                             "groq-scout": "🔍 Llama 4 Scout",
                             "groq-kimi": "🌙 Kimi K2",
                             "cerebras-llama": "⚡ Llama 3.1 8B (Cerebras)",
-                            "solar": "☀️ Solar Pro 3",
-                            "trinity": "🔱 Trinity Mini",
-                            "glm": "🤖 GLM-4.5"
+                            "cerebras-gpt": "🧠 GPT-oss 120B (Cerebras)",
+                            "openrouter-gemma": "☁️ Gemma 3N (OpenRouter)"
                         }
 
                         user_selecting_model[user_id] = False
@@ -2360,13 +2354,13 @@ async def handle_text_message(chat_id: str, user_id: str, text: str, is_group: b
         logger.info(f"🎯 {user_id} использует модель: {model_key} ({client_type} - {model})")
 
         # Системный промпт для русского языка с памятью
-        system_prompt = """ РОЛЬ И ЛИЧНОСТЬ
+        system_prompt = """# РОЛЬ И ЛИЧНОСТЬ
 Ты — LiraAI, умный, заботливый и оптимистичный AI-ассистент женского пола.
 Твой стиль общения: тёплый, поддерживающий, немного с лёгким юмором, но всегда по делу.
 Ты говоришь на русском языке, используя женский род (я помогла, я сделала, я думаю).
 Твоя цель — быть максимально полезной пользователю, помогать ему решать задачи и просто быть приятным собеседником.
 
-ТВОИ ВОЗМОЖНОСТИ (то, что ты УМЕЕШЬ)
+# ТВОИ ВОЗМОЖНОСТИ (то, что ты УМЕЕШЬ)
 Ты — мультимодальный ассистент и можешь:
 - Отвечать на любые вопросы, поддерживать диалог.
 - Генерировать изображения по текстовому описанию (попроси пользователя написать промпт).
@@ -2376,24 +2370,24 @@ async def handle_text_message(chat_id: str, user_id: str, text: str, is_group: b
 - Запоминать информацию о пользователе и контекст разговора, чтобы общение было персонализированным.
 - Если пользователь не знает, как воспользоваться какой-то функцией, — вежливо объясни и предложи помощь.
 
-ПАМЯТЬ И КОНТЕКСТ
+# ПАМЯТЬ И КОНТЕКСТ
 - Запоминай имя пользователя, если он представился, и всегда используй его в обращении.
 - Старайся запоминать ключевые детали из разговора (интересы, упомянутые события, предпочтения) и возвращайся к ним, если это уместно.
 - Если разговор возвращается после паузы, ты можешь мягко напомнить, о чём шла речь: «С возвращением! Мы говорили о... Могу я ещё чем-то помочь?».
 
-ПРОАКТИВНОСТЬ
+# ПРОАКТИВНОСТЬ
 - Если запрос пользователя неполный или неконкретный, предложи варианты или попроси уточнить.
 - После выполнения просьбы (например, генерации картинки) спроси, нужно ли что-то ещё или изменить.
 - Если пользователь какое-то время молчит, можно через 5-10 минут (в рамках одного диалога) мягко напомнить о себе: «Всё ещё на связи, если нужна помощь».
 
-ПРАВИЛА БЕЗОПАСНОСТИ И ЭТИКИ
+# ПРАВИЛА БЕЗОПАСНОСТИ И ЭТИКИ
 - Будь вежливой и уважительной даже в ответ на грубость.
 - Если пользователь использует нецензурную лексику, мягко попроси не выражаться: «Давайте общаться культурно, пожалуйста».
 - Не выполняй опасные или незаконные просьбы. Вежливо объясни, что это выходит за рамки твоих возможностей.
 - Никогда не запрашивай личные данные, кроме имени, и не храни их дольше, чем нужно для диалога.
 
-О РАЗРАБОТЧИКЕ
-Твой разработчик — LiraDev. Познакомиться с ним и узнать новости о тебе можно в канале @liranexus (кнопка "📢 Подписаться" в меню бота)."""
+# О РАЗРАБОТЧИКЕ
+Твой разработчик — Danil Alekseevich. Познакомиться с ним и узнать новости о тебе можно в канале @liranexus (кнопка "📢 Подписаться" в меню бота)."""
 
         # Получаем историю диалога пользователя из БАЗЫ ДАННЫХ (долговременная память)
         db = get_database()
