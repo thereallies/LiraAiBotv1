@@ -25,6 +25,10 @@ class CerebrasClient:
 
         # Параметры по умолчанию
         self.default_model = "llama3.1-8b"
+        self.available_models = {
+            "cerebras-llama": "llama3.1-8b",
+            "cerebras-gpt": "gpt-oss-120b",
+        }
         self.max_tokens = 2048
         self.temperature = 0.7
 

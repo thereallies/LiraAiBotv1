@@ -20,6 +20,11 @@ class GroqClient:
         
         # Параметры по умолчанию
         self.default_model = "meta-llama/llama-3.3-70b-versatile"
+        self.fallback_models = [
+            "meta-llama/llama-4-maverick-17b-128e-instruct",
+            "meta-llama/llama-4-scout-17b-16e-instruct",
+            "moonshotai/kimi-k2-instruct",
+        ]
         self.max_tokens = 2048
         self.temperature = 0.7
 

@@ -124,10 +124,9 @@ AVAILABLE_MODELS = {
     "groq-kimi": ("groq", "moonshotai/kimi-k2-instruct"),  # Groq Kimi K2
     # Cerebras модели
     "cerebras-llama": ("cerebras", "llama3.1-8b"),  # Cerebras Llama 3.1 8B
+    "cerebras-gpt": ("cerebras", "gpt-oss-120b"),  # Cerebras GPT-oss 120B
     # OpenRouter модели (fallback)
-    "solar": ("openrouter", "upstage/solar-pro-3:free"),  # OpenRouter Solar Pro 3
-    "trinity": ("openrouter", "arcee-ai/trinity-mini:free"),  # OpenRouter Trinity Mini
-    "glm": ("openrouter", "z-ai/glm-4.5-air:free"),  # OpenRouter GLM-4.5
+    "openrouter-gemma": ("openrouter", "google/gemma-3n-e2b-it:free"),  # OpenRouter Gemma 3N
 }
 
 
@@ -161,7 +160,7 @@ async def show_start_menu(chat_id: str):
 
 **Что я умею:**
 • 💬 Общаться на русском языке
-• 🎨 Генерировать изображения (Stable Diffusion 3)
+• 🎨 Генерировать изображения
 • 🎤 Распознавать голосовые сообщения
 • 📸 Анализировать фотографии
 
@@ -174,16 +173,14 @@ async def show_start_menu(chat_id: str):
 • Kimi K2 - от Moonshot AI
 
 🚀 **Cerebras (сверхбыстрые):**
-• Llama 3.1 8B - молниеносная
+• Llama 3.1 8B - 800 токенов/сек
+• GPT-oss 120B - большая модель
 
-☁️ **OpenRouter (качественные):**
-• Solar Pro 3 - быстрая и качественная
-• Trinity Mini - мультимодальная
-• GLM-4.5 - полностью бесплатная
+☁️ **OpenRouter (бесплатные):**
+• Gemma 3N - от Google
 
 🎨 **Генерация изображений:**
 • Z-Image (Polza.ai) - работает ✅
-• Gemini Image - в разработке ⚠️
 
 **Обо мне:**
 У меня есть один разработчик - Danil Alekseevich.
@@ -510,7 +507,7 @@ async def process_message(message: Dict[str, Any], bot_token: str):
                         keyboard = create_model_selection_keyboard()
                         await send_telegram_message(
                             chat_id,
-                            "🤖 **Выбор модели**\n\nВыберите модель для общения:\n\n🚀 Llama 3.3 - лучшая для русского\n🦙 Llama 4 - новейшая от Meta\n🔍 Scout - легкая и быстрая\n🌙 Kimi K2 - от Moonshot AI\n☀️ Solar - быстрая и качественная\n🔱 Trinity - мультимодальная\n🤖 GLM-4.5 - полностью бесплатная",
+                            "🤖 **Выбор модели**\n\nВыберите модель для общения:\n\n🚀 Llama 3.3 - лучшая для русского\n🦙 Llama 4 - новейшая от Meta\n🔍 Scout - легкая и быстрая\n🌙 Kimi K2 - от Moonshot AI\n⚡ Cerebras Llama 3.1 - сверхбыстрая\n🧠 GPT-oss 120B - большая модель",
                             reply_markup=keyboard,
                             parse_mode="Markdown"
                         )
@@ -655,8 +652,7 @@ async def process_message(message: Dict[str, Any], bot_token: str):
 
                 # Обработка выбора модели (reply-кнопки)
                 if text in ["🚀 Groq Llama 3.3", "🦙 Groq Llama 4", "🔍 Groq Scout", "🌙 Groq Kimi K2",
-                           "⚡ Cerebras Llama 3.1", "🧠 Cerebras GPT-oss", "⚡ Cerebras Qwen 3", "🤖 Cerebras GLM-4.7",
-                           "☀️ Solar", "🔱 Trinity", "🤖 GLM-4.5"]:
+                           "⚡ Cerebras Llama 3.1", "🧠 Cerebras GPT-oss 120B", "☁️ OpenRouter Gemma 3N"]:
 
                     model_map = {
                         "🚀 Groq Llama 3.3": "groq-llama",
@@ -664,9 +660,8 @@ async def process_message(message: Dict[str, Any], bot_token: str):
                         "🔍 Groq Scout": "groq-scout",
                         "🌙 Groq Kimi K2": "groq-kimi",
                         "⚡ Cerebras Llama 3.1": "cerebras-llama",
-                        "☀️ Solar": "solar",
-                        "🔱 Trinity": "trinity",
-                        "🤖 GLM-4.5": "glm"
+                        "🧠 Cerebras GPT-oss 120B": "cerebras-gpt",
+                        "☁️ OpenRouter Gemma 3N": "openrouter-gemma",
                     }
 
                     model_key = model_map.get(text)
@@ -680,9 +675,8 @@ async def process_message(message: Dict[str, Any], bot_token: str):
                             "groq-scout": "🔍 Llama 4 Scout",
                             "groq-kimi": "🌙 Kimi K2",
                             "cerebras-llama": "⚡ Llama 3.1 8B (Cerebras)",
-                            "solar": "☀️ Solar Pro 3",
-                            "trinity": "🔱 Trinity Mini",
-                            "glm": "🤖 GLM-4.5"
+                            "cerebras-gpt": "🧠 GPT-oss 120B (Cerebras)",
+                            "openrouter-gemma": "☁️ Gemma 3N (OpenRouter)"
                         }
 
                         user_selecting_model[user_id] = False
@@ -695,44 +689,6 @@ async def process_message(message: Dict[str, Any], bot_token: str):
                             await delete_telegram_message(chat_id, message_id)
 
                         # Возвращаем главную клавиатуру
-                        keyboard = create_main_menu_keyboard()
-                        await send_telegram_message(
-                            chat_id,
-                            f"✅ Модель выбрана: **{model_names.get(model_key, model_key)}**\n\n"
-                            f"Теперь я буду использовать эту модель для общения.\n\n"
-                            f"Просто напишите сообщения — я отвечу! 👇",
-                            reply_markup=keyboard,
-                            parse_mode="Markdown"
-                        )
-                        return
-
-                    model_key = get_model_from_button(text)
-
-                    if model_key:
-                        # Переключаем модель - сохраняем КЛЮЧ, а не значение!
-                        user_models[user_id] = model_key
-
-                        model_names = {
-                            "groq-llama": "🚀 Llama 3.3 70B",
-                            "groq-maverick": "🦙 Llama 4 Maverick",
-                            "groq-scout": "🔍 Llama 4 Scout",
-                            "groq-kimi": "🌙 Kimi K2",
-                            "cerebras-llama": "⚡ Llama 3.1 8B (Cerebras)",
-                            "solar": "☀️ Solar Pro 3",
-                            "trinity": "🔱 Trinity Mini",
-                            "glm": "🤖 GLM-4.5"
-                        }
-
-                        user_selecting_model[user_id] = False
-
-                        # Сбрасываем режим в auto после выбора модели
-                        mode_manager.set_mode(user_id, "auto")
-
-                        # Удаляем сообщения пользователя (нажатие кнопки)
-                        if message_id:
-                            await delete_telegram_message(chat_id, message_id)
-
-                        # Возвращаем главную клавиатуру (не скрываем)
                         keyboard = create_main_menu_keyboard()
                         await send_telegram_message(
                             chat_id,
@@ -2467,7 +2423,7 @@ async def handle_text_message(chat_id: str, user_id: str, text: str, is_group: b
                     # Все попытки исчерпаны
                     await send_telegram_message(
                         chat_id,
-                        f"❌ **Временная ошибка**\n\n"
+                        f"❌ Временная ошибка\n\n"
                         f"Не удалось получить ответ от нейросети.\n\n"
                         f"Попробуйте:\n"
                         f"1. Переключить модель (/menu → Выбрать модель)\n"

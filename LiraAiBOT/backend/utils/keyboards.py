@@ -100,14 +100,11 @@ def create_model_selection_keyboard() -> Dict[str, Any]:
                 {"text": "🌙 Groq Kimi K2"}
             ],
             [
-                {"text": "⚡ Cerebras Llama 3.1"}
+                {"text": "⚡ Cerebras Llama 3.1"},
+                {"text": "🧠 Cerebras GPT-oss 120B"}
             ],
             [
-                {"text": "☀️ Solar"},
-                {"text": "🔱 Trinity"}
-            ],
-            [
-                {"text": "🤖 GLM-4.5"}
+                {"text": "☁️ OpenRouter Gemma 3N"}
             ],
             [
                 {"text": "◀️ Назад к меню"}
@@ -152,11 +149,9 @@ def get_model_from_button(text: str) -> str:
         "🌙 Groq Kimi K2": "groq-kimi",
         # Cerebras модели
         "⚡ Cerebras Llama 3.1": "cerebras-llama",
-        "🧠 Cerebras Qwen 3": "cerebras-qwen",
+        "🧠 Cerebras GPT-oss 120B": "cerebras-gpt",
         # OpenRouter модели
-        "☀️ Solar": "solar",
-        "🔱 Trinity": "trinity",
-        "🤖 GLM-4.5": "glm"
+        "☁️ OpenRouter Gemma 3N": "openrouter-gemma",
     }
     return model_map.get(text, None)
 

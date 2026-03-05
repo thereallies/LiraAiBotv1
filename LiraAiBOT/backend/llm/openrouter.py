@@ -26,10 +26,13 @@ class OpenRouterClient:
         
         # Параметры LLM
         llm_cfg = getattr(config, "LLM_CONFIG", {})
-        self.default_model = llm_cfg.get("model", "openai/gpt-oss-20b:free")
-        self.fallback_model = llm_cfg.get("fallback_model", "deepseek/deepseek-chat-v3.1:free")
+        self.default_model = llm_cfg.get("model", "google/gemma-3n-e2b-it:free")
+        self.fallback_model = llm_cfg.get("fallback_model", "google/gemma-3n-e2b-it:free")
         self.max_tokens = llm_cfg.get("max_tokens", 4096)
         self.temperature = llm_cfg.get("temperature", 0.7)
+        
+        # Vision модель
+        self.vision_model = llm_cfg.get("vision_model", "nvidia/nemotron-nano-12b-v2-vl:free")
         
         logger.info(f"OpenRouter клиент инициализирован с {len(self.api_keys)} ключами")
     

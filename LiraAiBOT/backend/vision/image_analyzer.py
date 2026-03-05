@@ -39,18 +39,16 @@ class ImageAnalyzer:
         self.openrouter_url = "https://openrouter.ai/api/v1/chat/completions"
         
         # Модели для анализа
-        self.groq_model = "meta-llama/llama-3.2-90b-vision-preview"  # Groq vision модель
-        self.cerebras_model = "llama-3.3-70b-instruct"     # Cerebras (без vision, но попробуем)
+        # Groq Vision не существует - исключаем
+        # Cerebras Vision не поддерживает - исключаем
         self.openrouter_models = [
-            "nvidia/nemotron-nano-12b-v2-vl:free",
-            "qwen/qwen3-vl-30b-a3b-thinking:free",
-            "qwen/qwen3-vl-235b-a22b-thinking:free",
+            "nvidia/nemotron-nano-12b-v2-vl:free",  # ✅ Работает!
         ]
-        
+
         logger.info(f"ImageAnalyzer инициализирован:")
-        logger.info(f"  Groq: {'✅' if self.groq_key else '❌'} ({self.groq_model})")
-        logger.info(f"  Cerebras: {'✅' if self.cerebras_key else '❌'} ({self.cerebras_model})")
-        logger.info(f"  OpenRouter: {'✅' if self.openrouter_keys else '❌'} ({len(self.openrouter_models)} моделей)")
+        logger.info(f"  Groq Vision: ❌ (модель не существует)")
+        logger.info(f"  Cerebras Vision: ❌ (не поддерживает)")
+        logger.info(f"  OpenRouter Vision: ✅ ({len(self.openrouter_models)} моделей)")
 
     async def analyze_image(self, image_path: str, prompt: str = "Что на этом изображении? Опиши подробно.") -> Optional[str]:
         """
@@ -79,30 +77,14 @@ class ImageAnalyzer:
                 }
             ]
 
-            # 1. Пробуем Groq (приоритет)
-            if self.groq_key:
-                logger.info(f"🔍 Пробуем Groq: {self.groq_model}")
-                result = await self._try_groq(messages, self.groq_key)
-                if result:
-                    logger.info(f"✅ Groq успешно: {result[:100]}...")
-                    return result
-
-            # 2. Пробуем Cerebras
-            if self.cerebras_key:
-                logger.info(f"🔍 Пробуем Cerebras: {self.cerebras_model}")
-                result = await self._try_cerebras(messages, self.cerebras_key)
-                if result:
-                    logger.info(f"✅ Cerebras успешно: {result[:100]}...")
-                    return result
-
-            # 3. Пробуем OpenRouter (fallback)
+            # 1. Пробуем OpenRouter Vision (единственный рабочий вариант)
             if self.openrouter_keys:
                 for model in self.openrouter_models:
-                    logger.info(f"🔍 Пробуем OpenRouter: {model}")
+                    logger.info(f"🔍 Пробуем OpenRouter Vision: {model}")
                     for api_key in self.openrouter_keys:
                         result = await self._try_openrouter(messages, api_key, model)
                         if result:
-                            logger.info(f"✅ OpenRouter успешно ({model}): {result[:100]}...")
+                            logger.info(f"✅ OpenRouter Vision успешно ({model}): {result[:100]}...")
                             return result
 
             logger.error("❌ Не удалось проанализировать изображение со всеми методами")
