@@ -26,15 +26,15 @@ def create_main_menu_keyboard() -> Dict[str, Any]:
                 {"text": "📢 Подписаться"}
             ],
             [
-                {"text": "❓ Помощь"},
+                {"text": "💬 Поддержка"},
                 {"text": "🔒 Политика конфиденциальности"}
             ],
             [
                 {"text": "⬇️ Скрыть клавиатуру"}
             ]
         ],
-        "resize_keyboard": True,  # Подстраивается под размер экрана
-        "one_time_keyboard": False,  # Остаётся видимой после нажатия
+        "resize_keyboard": True,
+        "one_time_keyboard": False,
         "input_field_placeholder": "Выберите модель или режим"
     }
     return keyboard
@@ -73,7 +73,7 @@ BOT_MODES = {
     "voice": "🎤 Голос",
     "photo": "📸 Фото",
     "generation": "🎨 Генерация",
-    "help": "❓ Помощь",
+    "help": "💬 Поддержка",
     "privacy": "🔒 Политика конфиденциальности",
     "auto": "🤖 Авто",  # Автоматическое определение
     "select_model": "🤖 Выбрать модель",
