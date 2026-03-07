@@ -19,7 +19,7 @@ class GroqClient:
         self.base_url = os.getenv("GROQ_BASE_URL", "https://api.groq.com/openai/v1")
         
         # Параметры по умолчанию
-        self.default_model = "meta-llama/llama-3.3-70b-versatile"
+        self.default_model = "openai/gpt-oss-20b"
         self.fallback_models = [
             "meta-llama/llama-4-maverick-17b-128e-instruct",
             "meta-llama/llama-4-scout-17b-16e-instruct",

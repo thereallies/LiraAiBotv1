@@ -188,6 +188,61 @@ async def send_telegram_message(
     return success
 
 
+async def send_telegram_message_get_id(
+    chat_id: str,
+    text: str,
+    parse_mode: Optional[str] = None,
+    reply_to_message_id: Optional[int] = None,
+    token: Optional[str] = None,
+    reply_markup: Optional[Dict] = None
+) -> Optional[int]:
+    """
+    Отправляет сообщение и возвращает message_id первой части.
+    Подходит для коротких служебных сообщений, на которые нужно принимать reply.
+    """
+    if not token:
+        token = get_token_for_chat(chat_id)
+
+    if not token:
+        logger.error("TELEGRAM_BOT_TOKEN не настроен")
+        return None
+
+    message_parts = split_long_message(text)
+    first_message_id = None
+    url = f"{TELEGRAM_API_URL}{token}/sendMessage"
+
+    for i, part in enumerate(message_parts):
+        payload = {
+            "chat_id": chat_id,
+            "text": part,
+        }
+
+        if parse_mode:
+            payload["parse_mode"] = parse_mode
+        if i == 0 and reply_to_message_id:
+            payload["reply_to_message_id"] = reply_to_message_id
+        if reply_markup and i == 0:
+            payload["reply_markup"] = reply_markup
+
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(url, json=payload) as response:
+                    if response.status == 200:
+                        response_data = await response.json()
+                        message_id = response_data.get("result", {}).get("message_id")
+                        if i == 0:
+                            first_message_id = message_id
+                    else:
+                        error = await response.text()
+                        logger.error(f"❌ Ошибка отправки сообщения c id (часть {i+1}/{len(message_parts)}): {error}")
+                        return None
+        except Exception as e:
+            logger.error(f"❌ Исключение при отправке сообщения c id (часть {i+1}/{len(message_parts)}): {e}")
+            return None
+
+    return first_message_id
+
+
 
 
 async def send_telegram_message_with_buttons(
@@ -607,4 +662,3 @@ async def download_telegram_file(file_id: str, save_path: Path, token: Optional[
     except Exception as e:
         logger.error(f"Ошибка при скачивании файла: {e}")
         return None
-

@@ -1,8 +1,7 @@
 """
 Модуль для анализа изображений через мультимодальные модели.
-Поддерживает: Groq, Cerebras, OpenRouter (fallback)
+Поддерживает OpenRouter Vision.
 """
-import asyncio
 import logging
 import os
 import base64
@@ -18,7 +17,7 @@ logger = logging.getLogger("bot.vision")
 class ImageAnalyzer:
     """
     Класс для анализа изображений с помощью мультимодальных моделей.
-    Приоритет: Groq → Cerebras → OpenRouter (fallback)
+    Приоритет: Gemma 3 4B → OpenRouter Free → Nemotron VL
     """
 
     def __init__(self, config: Optional[Config] = None):
@@ -30,24 +29,15 @@ class ImageAnalyzer:
         self.openrouter_keys = config.OPENROUTER_API_KEYS.copy()
         self.openrouter_keys = [k for k in self.openrouter_keys if k and k != "your_openrouter_api_key"]
         
-        self.groq_key = os.environ.get("GROQ_API_KEY", "")
-        self.groq_url = "https://api.groq.com/openai/v1/chat/completions"
-        
-        self.cerebras_key = os.environ.get("CEREBRAS_API_KEY", "")
-        self.cerebras_url = "https://api.cerebras.ai/v1/chat/completions"
-        
         self.openrouter_url = "https://openrouter.ai/api/v1/chat/completions"
-        
-        # Модели для анализа
-        # Groq Vision не существует - исключаем
-        # Cerebras Vision не поддерживает - исключаем
+
         self.openrouter_models = [
-            "nvidia/nemotron-nano-12b-v2-vl:free",  # ✅ Работает!
+            "google/gemma-3-4b-it:free",
+            "openrouter/free",
+            "nvidia/nemotron-nano-12b-v2-vl:free",
         ]
 
         logger.info(f"ImageAnalyzer инициализирован:")
-        logger.info(f"  Groq Vision: ❌ (модель не существует)")
-        logger.info(f"  Cerebras Vision: ❌ (не поддерживает)")
         logger.info(f"  OpenRouter Vision: ✅ ({len(self.openrouter_models)} моделей)")
 
     async def analyze_image(self, image_path: str, prompt: str = "Что на этом изображении? Опиши подробно.") -> Optional[str]:
@@ -62,7 +52,6 @@ class ImageAnalyzer:
         Returns:
             Текстовое описание изображения или None в случае ошибки
         """
-        # Конвертируем изображение в base64
         try:
             with open(image_path, "rb") as image_file:
                 image_data = base64.b64encode(image_file.read()).decode('utf-8')
@@ -77,7 +66,6 @@ class ImageAnalyzer:
                 }
             ]
 
-            # 1. Пробуем OpenRouter Vision (единственный рабочий вариант)
             if self.openrouter_keys:
                 for model in self.openrouter_models:
                     logger.info(f"🔍 Пробуем OpenRouter Vision: {model}")
@@ -87,68 +75,12 @@ class ImageAnalyzer:
                             logger.info(f"✅ OpenRouter Vision успешно ({model}): {result[:100]}...")
                             return result
 
-            logger.error("❌ Не удалось проанализировать изображение со всеми методами")
+            logger.error("❌ Не удалось проанализировать изображение через OpenRouter Vision")
             return "Не удалось проанализировать изображение. Возможно, превышен лимит запросов или формат изображения не поддерживается."
 
         except Exception as e:
             logger.error(f"Ошибка при подготовке изображения: {e}", exc_info=True)
             return f"Ошибка при анализе изображения: {str(e)}"
-
-    async def _try_groq(self, messages: List[Dict[str, Any]], api_key: str) -> Optional[str]:
-        """Анализ через Groq API"""
-        headers = {
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json",
-        }
-        data = {
-            "model": self.groq_model,
-            "messages": messages,
-            "max_tokens": 2000
-        }
-        
-        try:
-            async with aiohttp.ClientSession() as session:
-                async with session.post(self.groq_url, headers=headers, json=data, timeout=aiohttp.ClientTimeout(total=60)) as response:
-                    if response.status != 200:
-                        error = await response.text()
-                        logger.warning(f"Groq ошибка ({response.status}): {error[:200]}")
-                        return None
-                    
-                    result = await response.json()
-                    if "choices" in result and len(result["choices"]) > 0:
-                        return result["choices"][0]["message"]["content"]
-                    return None
-        except Exception as e:
-            logger.error(f"Groq исключение: {e}")
-            return None
-
-    async def _try_cerebras(self, messages: List[Dict[str, Any]], api_key: str) -> Optional[str]:
-        """Анализ через Cerebras API"""
-        headers = {
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json",
-        }
-        data = {
-            "model": self.cerebras_model,
-            "messages": messages,
-            "max_tokens": 2000
-        }
-        
-        try:
-            async with aiohttp.ClientSession() as session:
-                async with session.post(self.cerebras_url, headers=headers, json=data, timeout=aiohttp.ClientTimeout(total=60)) as response:
-                    if response.status != 200:
-                        error = await response.text()
-                        logger.warning(f"Cerebras ошибка ({response.status}): {error[:200]}")
-                        return None
-                    
-                    result = await response.json()
-                    if "choices" in result and len(result["choices"]) > 0:
-                        return result["choices"][0]["message"]["content"]
-                    return None
-        except Exception as e:
-            logger.error(f"Cerebras исключение: {e}")
-            return None
 
     async def _try_openrouter(self, messages: List[Dict[str, Any]], api_key: str, model: str) -> Optional[str]:
         """Анализ через OpenRouter API"""
@@ -174,7 +106,13 @@ class ImageAnalyzer:
                     
                     result = await response.json()
                     if "choices" in result and len(result["choices"]) > 0:
-                        return result["choices"][0]["message"]["content"]
+                        message = result["choices"][0].get("message", {})
+                        content = message.get("content")
+                        if content:
+                            return content
+                        reasoning = message.get("reasoning")
+                        if reasoning:
+                            return reasoning
                     return None
         except Exception as e:
             logger.error(f"OpenRouter исключение: {e}")

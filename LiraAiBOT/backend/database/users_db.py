@@ -5,6 +5,7 @@
 import os
 import sqlite3
 import logging
+import json
 from datetime import datetime, timedelta, timezone
 from typing import Optional, Dict, Any, List
 from pathlib import Path
@@ -636,6 +637,122 @@ class BotDatabase:
                 "until_time": _bot_settings_cache.get("maintenance_until", None)
             }
 
+    def set_user_ban(self, user_id: str, banned_by: str, days: Optional[int] = None, reason: str = "admin_action") -> bool:
+        """Устанавливает бан пользователю. days=None означает перманентный бан."""
+        ban_key = f"user_ban:{user_id}"
+        now = get_moscow_now()
+        ban_data = {
+            "user_id": user_id,
+            "banned_by": banned_by,
+            "banned_at": now.isoformat(),
+            "banned_until": None if days is None else (now + timedelta(days=days)).isoformat(),
+            "days": days,
+            "reason": reason,
+            "permanent": days is None,
+        }
+
+        if USE_SUPABASE and supabase:
+            try:
+                supabase.table("bot_settings").upsert({
+                    "key": ban_key,
+                    "value": json.dumps(ban_data, ensure_ascii=False)
+                }).execute()
+                return True
+            except Exception as e:
+                logger.error(f"❌ Ошибка Supabase в set_user_ban: {e}")
+                return False
+
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        try:
+            cursor.execute("""
+                INSERT OR REPLACE INTO bot_settings (key, value) VALUES (?, ?)
+            """, (ban_key, json.dumps(ban_data, ensure_ascii=False)))
+            conn.commit()
+            return True
+        except Exception as e:
+            logger.error(f"❌ Ошибка SQLite в set_user_ban: {e}")
+            conn.rollback()
+            return False
+        finally:
+            conn.close()
+
+    def remove_user_ban(self, user_id: str) -> bool:
+        """Снимает бан с пользователя."""
+        ban_key = f"user_ban:{user_id}"
+
+        if USE_SUPABASE and supabase:
+            try:
+                supabase.table("bot_settings").delete().eq("key", ban_key).execute()
+                return True
+            except Exception as e:
+                logger.error(f"❌ Ошибка Supabase в remove_user_ban: {e}")
+                return False
+
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        try:
+            cursor.execute("DELETE FROM bot_settings WHERE key = ?", (ban_key,))
+            conn.commit()
+            return True
+        except Exception as e:
+            logger.error(f"❌ Ошибка SQLite в remove_user_ban: {e}")
+            conn.rollback()
+            return False
+        finally:
+            conn.close()
+
+    def get_user_ban(self, user_id: str) -> Optional[Dict[str, Any]]:
+        """Возвращает активный бан пользователя или None."""
+        ban_key = f"user_ban:{user_id}"
+        raw_value = None
+
+        if USE_SUPABASE and supabase:
+            try:
+                result = supabase.table("bot_settings").select("value").eq("key", ban_key).execute()
+                if result.data:
+                    raw_value = result.data[0].get("value")
+            except Exception as e:
+                logger.error(f"❌ Ошибка Supabase в get_user_ban: {e}")
+                return None
+        else:
+            conn = self._get_connection()
+            cursor = conn.cursor()
+            try:
+                cursor.execute("SELECT value FROM bot_settings WHERE key = ?", (ban_key,))
+                row = cursor.fetchone()
+                raw_value = row["value"] if row else None
+            except Exception as e:
+                logger.error(f"❌ Ошибка SQLite в get_user_ban: {e}")
+                return None
+            finally:
+                conn.close()
+
+        if not raw_value:
+            return None
+
+        try:
+            ban_data = json.loads(raw_value)
+        except Exception as e:
+            logger.error(f"❌ Ошибка парсинга бана для {user_id}: {e}")
+            return None
+
+        banned_until = ban_data.get("banned_until")
+        if banned_until:
+            try:
+                until_dt = datetime.fromisoformat(str(banned_until).replace("Z", "+00:00"))
+                if until_dt.tzinfo:
+                    until_dt = until_dt.astimezone(MOSCOW_TZ)
+                else:
+                    until_dt = until_dt.replace(tzinfo=MOSCOW_TZ)
+                if get_moscow_now() >= until_dt:
+                    self.remove_user_ban(user_id)
+                    return None
+            except Exception as e:
+                logger.warning(f"⚠️ Ошибка обработки даты бана для {user_id}: {e}")
+
+        return ban_data
+
     def get_all_users_for_notification(self) -> List[str]:
         """Получает список всех user_id для рассылки уведомлений (с кэшем)"""
         if USE_SUPABASE and supabase:
@@ -973,32 +1090,49 @@ class BotDatabase:
             try:
                 user_result = supabase.table("users").select("*").execute()
                 users = user_result.data if user_result.data else []
-                
+
                 # Добавляем лимиты
                 limits_result = supabase.table("generation_limits").select("*").execute()
                 limits_map = {row["user_id"]: row for row in limits_result.data} if limits_result.data else {}
-                
+
+                # Считаем реальные генерации за текущий день по истории
+                today_start = get_moscow_now().replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
+                history_result = supabase.table("generation_history").select("user_id").gte("created_at", today_start).execute()
+                today_counts: Dict[str, int] = {}
+                for row in (history_result.data or []):
+                    history_user_id = row.get("user_id")
+                    if history_user_id:
+                        today_counts[history_user_id] = today_counts.get(history_user_id, 0) + 1
+
                 for user in users:
                     limit = limits_map.get(user["user_id"], {})
-                    user["daily_count"] = limit.get("daily_count", 0)
+                    user["daily_count"] = today_counts.get(user["user_id"], 0)
+                    user["today_generations"] = user["daily_count"]
                     user["total_count"] = limit.get("total_count", 0)
                     user["last_reset"] = limit.get("last_reset", "")
-                
+                    user["is_banned"] = self.get_user_ban(user["user_id"]) is not None
+
                 return users
             except Exception as e:
                 logger.error(f"❌ Ошибка Supabase в get_all_users: {e}")
-        
+
         # SQLite версия
         conn = self._get_connection()
         cursor = conn.cursor()
         cursor.execute("""
-            SELECT u.*, g.daily_count, g.total_count, g.last_reset
+            SELECT u.*, g.total_count, g.last_reset,
+                   COUNT(CASE WHEN gh.created_at >= ? THEN 1 END) as today_generations
             FROM users u
             JOIN generation_limits g ON u.user_id = g.user_id
+            LEFT JOIN generation_history gh ON u.user_id = gh.user_id
+            GROUP BY u.user_id, u.username, u.first_name, u.last_name, u.access_level, u.created_at, u.last_seen, g.total_count, g.last_reset
             ORDER BY u.created_at DESC
-        """)
+        """, (get_moscow_now().date().isoformat(),))
         users = [dict(row) for row in cursor.fetchall()]
         conn.close()
+        for user in users:
+            user["daily_count"] = user.get("today_generations", 0)
+            user["is_banned"] = self.get_user_ban(user["user_id"]) is not None
         return users
 
     def is_admin(self, user_id: str) -> bool:

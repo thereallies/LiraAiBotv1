@@ -23,17 +23,34 @@ class KIEClient:
         self.api_key = os.getenv("KIE_API_KEY", "")
         self.base_url = "https://api.kie.ai/api/v1"
 
-        # Модель Nano Banana 2
-        self.model = "nano-banana-2"
+        self.models = {
+            "kie-nano-banana-2": {
+                "model": "nano-banana-2",
+                "level": "user",
+                "description": "Nano Banana 2 (KIE.ai)"
+            },
+        }
+        self.models_by_level = {
+            "admin": ["kie-nano-banana-2"],
+            "subscriber": ["kie-nano-banana-2"],
+            "user": ["kie-nano-banana-2"],
+        }
 
         if self.api_key:
             logger.info(f"✅ KIE.ai клиент инициализирован (Nano Banana 2)")
         else:
             logger.warning("❌ KIE_API_KEY не настроен")
 
+    def get_models_for_user(self, access_level: str) -> dict:
+        """Получает доступные модели для уровня доступа пользователя."""
+        level = access_level if access_level in self.models_by_level else "user"
+        model_keys = self.models_by_level[level]
+        return {k: v for k, v in self.models.items() if k in model_keys}
+
     async def generate_image(
         self,
         prompt: str,
+        model_key: str = "kie-nano-banana-2",
         timeout: int = 90
     ) -> Optional[bytes]:
         """
@@ -42,6 +59,12 @@ class KIEClient:
         if not self.api_key:
             logger.error("❌ KIE API ключ не настроен")
             return None
+
+        if model_key not in self.models:
+            logger.error(f"❌ Модель {model_key} не найдена")
+            return None
+
+        model_name = self.models[model_key]["model"]
 
         headers = {
             "Authorization": f"Bearer {self.api_key}",
@@ -53,7 +76,7 @@ class KIEClient:
                 # Создаем задачу
                 create_url = f"{self.base_url}/jobs/createTask"
                 payload = {
-                    "model": self.model,
+                    "model": model_name,
                     "callBackUrl": "",  # Не используем callback
                     "input": {
                         "prompt": prompt,
@@ -63,7 +86,7 @@ class KIEClient:
                     }
                 }
 
-                logger.info(f"🎨 KIE.ai Nano Banana 2 запрос: {prompt[:50]}...")
+                logger.info(f"🎨 KIE.ai запрос ({model_name}): {prompt[:50]}...")
 
                 async with session.post(create_url, json=payload, headers=headers, timeout=aiohttp.ClientTimeout(total=timeout)) as response:
                     if response.status != 200:
@@ -90,17 +113,28 @@ class KIEClient:
                     await asyncio.sleep(3)
 
                     # Проверяем статус
-                    status_url = f"{self.base_url}/jobs/{task_id}"
+                    status_url = f"{self.base_url}/jobs/recordInfo?taskId={task_id}"
                     async with session.get(status_url, headers=headers) as status_response:
                         if status_response.status == 200:
                             status_data = await status_response.json()
                             
                             if status_data.get("code") == 200:
-                                task_status = status_data.get("data", {}).get("status")
+                                task_status = status_data.get("data", {}).get("state")
                                 
-                                if task_status == "COMPLETED":
+                                if task_status == "success":
                                     # Получаем результат
-                                    output_url = status_data.get("data", {}).get("outputUrl")
+                                    result_json = status_data.get("data", {}).get("resultJson") or "{}"
+                                    try:
+                                        import json
+                                        result_data = json.loads(result_json)
+                                    except Exception:
+                                        result_data = {}
+
+                                    output_url = (
+                                        result_data.get("output", {}).get("image_url")
+                                        or result_data.get("outputUrl")
+                                        or result_data.get("imageUrl")
+                                    )
                                     if output_url:
                                         logger.info(f"✅ KIE.ai изображение готово: {output_url}")
 
@@ -112,7 +146,7 @@ class KIEClient:
 
                                     logger.error("❌ Не получен URL изображения")
                                     return None
-                                elif task_status in ["FAILED", "CANCELLED"]:
+                                elif task_status in ["failed", "cancelled"]:
                                     logger.error(f"❌ KIE.ai ошибка: {task_status}")
                                     return None
                         else:

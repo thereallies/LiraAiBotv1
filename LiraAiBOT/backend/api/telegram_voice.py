@@ -84,7 +84,7 @@ async def process_telegram_voice(
         
         # Распознаем речь
         stt = get_stt_engine()
-        text = stt.speech_to_text(downloaded_path, language="ru")
+        text = await stt.speech_to_text(downloaded_path, language="ru")
         
         # Удаляем временный файл
         try:
@@ -108,7 +108,7 @@ async def process_telegram_voice(
             # Импортируем хранилище моделей
             from backend.api.telegram_polling import user_models, AVAILABLE_MODELS
             model_key = user_models.get(user_id, "groq-llama")
-            model_info = AVAILABLE_MODELS.get(model_key, ("groq", "llama-3.3-70b-versatile"))
+            model_info = AVAILABLE_MODELS.get(model_key, ("groq", "openai/gpt-oss-20b"))
 
             # Извлекаем тип клиента и название модели из кортежа
             client_type, model = model_info
@@ -148,6 +148,19 @@ async def process_telegram_voice(
             # Отправляем ответ только если он не пустой
             if response and response.strip():
                 await send_telegram_message(chat_id, f"💬 <b>Ответ:</b>\n\n{response}", "HTML")
+
+                # Дополнительно озвучиваем ответ через бесплатный gTTS
+                try:
+                    tts = get_tts_engine()
+                    audio_path = await tts.text_to_speech(response, language="ru")
+                    if audio_path:
+                        await send_telegram_audio(chat_id, audio_path, caption="🔊 Голосовой ответ")
+                        try:
+                            os.remove(audio_path)
+                        except Exception:
+                            pass
+                except Exception as e:
+                    logger.warning(f"[VOICE] Не удалось озвучить ответ через gTTS: {e}")
             else:
                 logger.warning("[VOICE] Пустой ответ от LLM")
                 await send_telegram_message(chat_id, "⚠️ Пустой ответ от LLM")
@@ -163,4 +176,3 @@ async def process_telegram_voice(
         logger.error(f"Ошибка при обработке голосового сообщения: {e}")
         await send_telegram_message(chat_id, "❌ Произошла ошибка при обработке голосового сообщения.")
         return None
-

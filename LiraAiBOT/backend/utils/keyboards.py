@@ -92,7 +92,7 @@ def create_model_selection_keyboard() -> Dict[str, Any]:
     keyboard = {
         "keyboard": [
             [
-                {"text": "🚀 Groq Llama 3.3"},
+                {"text": "🧠 Groq GPT-oss 20B"},
                 {"text": "🦙 Groq Llama 4"}
             ],
             [
@@ -136,14 +136,14 @@ def get_model_from_button(text: str) -> str:
     Определяет модель по тексту кнопки.
 
     Args:
-        text: Текст кнопки (например, "🚀 Groq Llama 3.3")
+        text: Текст кнопки (например, "🧠 Groq GPT-oss 20B")
 
     Returns:
         ID модели (например, "groq-llama")
     """
     model_map = {
         # Groq модели
-        "🚀 Groq Llama 3.3": "groq-llama",
+        "🧠 Groq GPT-oss 20B": "groq-llama",
         "🦙 Groq Llama 4": "groq-maverick",
         "🔍 Groq Scout": "groq-scout",
         "🌙 Groq Kimi K2": "groq-kimi",
@@ -194,15 +194,12 @@ def create_image_model_selection_keyboard(access_level: str = "user") -> Dict[st
     # Модели по уровням доступа - каждая кнопка в отдельном массиве (строка)
     models_by_level = {
         "admin": [
-            # [{"text": "✨ Gemini 2.5 Flash", "callback_data": "img_gemini-flash"}],  # В разработке
             [{"text": "🎨 Z-Image (Polza.ai)", "callback_data": "img_polza-zimage"}],
         ],
         "subscriber": [
-            # [{"text": "✨ Gemini 2.5 Flash", "callback_data": "img_gemini-flash"}],  # В разработке
             [{"text": "🎨 Z-Image (Polza.ai)", "callback_data": "img_polza-zimage"}],
         ],
         "user": [
-            # [{"text": "✨ Gemini 2.5 Flash", "callback_data": "img_gemini-flash"}],  # В разработке
             [{"text": "🎨 Z-Image (Polza.ai)", "callback_data": "img_polza-zimage"}],
         ]
     }

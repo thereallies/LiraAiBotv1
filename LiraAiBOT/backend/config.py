@@ -140,10 +140,9 @@ FEEDBACK_BOT_GROUP_IDS = [gid.strip() for gid in os.environ.get("FEEDBACK_BOT_GR
 FEEDBACK_KNOWLEDGE_DIR = BASE_DIR / "data" / "feedback_knowledge"
 
 # Настройки LLM
-# Используем бесплатные модели: Solar, Trinity, GLM
 LLM_CONFIG = {
-    "model": "upstage/solar-pro-3:free",  # Бесплатная Solar Pro 3
-    "fallback_model": "arcee-ai/trinity-mini:free",  # Бесплатная Trinity Mini
+    "model": "google/gemma-3-4b-it:free",
+    "fallback_model": "google/gemma-3n-e2b-it:free",
     "temperature": 0.7,
     "max_tokens": 2048,  # Увеличено для полных ответов
 }
@@ -251,4 +250,3 @@ class Config:
         self.DATA_DIR = DATA_DIR
         self.TEMP_DIR = TEMP_DIR
         self.LOGS_DIR = LOGS_DIR
-

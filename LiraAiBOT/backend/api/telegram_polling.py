@@ -5,7 +5,7 @@ import asyncio
 import logging
 import os
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Dict, Any, Optional, List
 
@@ -14,6 +14,7 @@ import aiohttp
 from backend.config import TELEGRAM_CONFIG, Config
 from backend.api.telegram_core import (
     send_telegram_message,
+    send_telegram_message_get_id,
     send_telegram_photo,
     send_telegram_audio,
     download_telegram_file,
@@ -26,7 +27,6 @@ from backend.api.telegram_voice import process_telegram_voice
 from backend.llm.openrouter import OpenRouterClient
 from backend.llm.groq import get_groq_client
 from backend.llm.cerebras import get_cerebras_client
-from backend.vision.gemini_image import get_gemini_image_client
 from backend.vision.hf_replicate import get_hf_replicate_client
 from backend.utils.keyboards import (
     create_main_menu_keyboard,
@@ -63,10 +63,7 @@ groq_client = get_groq_client()
 # Создаем Cerebras клиент для сверхбыстрых моделей
 cerebras_client = get_cerebras_client()
 
-# Создаем Gemini Image клиент для генерации изображений
-gemini_image_client = get_gemini_image_client()
-
-# Создаем HF+Replicate клиент для генерации изображений через FLUX
+# Создаем Polza.ai клиент для генерации изображений
 hf_replicate_client = get_hf_replicate_client()
 
 # Инициализируем FeedbackBotHandler если включен
@@ -110,6 +107,25 @@ user_declined_payments: Dict[str, Dict[str, Any]] = {}
 # Формат: {user_id: {admin_id: message_id}}
 payment_notification_messages: Dict[str, Dict[str, int]] = {}
 
+# Ожидаемый ввод параметров бана от администратора
+# Формат: {admin_user_id: {"target_user_id": "...", "page_num": int}}
+pending_ban_input: Dict[str, Dict[str, Any]] = {}
+
+# Последние алерты о несанкционированном доступе к админке
+admin_alert_cooldowns: Dict[str, datetime] = {}
+
+# Ожидаемый ввод сообщения пользователю от администратора
+# Формат: {admin_user_id: {"target_user_id": "...", "page_num": int, "created_at": datetime}}
+pending_admin_messages: Dict[str, Dict[str, Any]] = {}
+
+# Маршрутизация ответов пользователя на сообщение от администрации
+# Формат: {user_id: {"admin_id": "...", "bot_message_id": int}}
+support_reply_routes: Dict[str, Dict[str, Any]] = {}
+
+# Маршрутизация reply-ответов администратора обратно пользователю
+# Формат: {admin_id: {admin_message_id: {"target_user_id": "...", "source_user_id": "..."}}}
+admin_reply_routes: Dict[str, Dict[int, Dict[str, str]]] = {}
+
 # Глобальная переменная для режима тех.работ
 maintenance_mode = {"enabled": False, "until_time": None}
 
@@ -118,7 +134,7 @@ maintenance_mode = {"enabled": False, "until_time": None}
 # Доступные модели для выбора
 AVAILABLE_MODELS = {
     # Groq модели
-    "groq-llama": ("groq", "llama-3.3-70b-versatile"),  # Groq Llama 3.3
+    "groq-llama": ("groq", "openai/gpt-oss-20b"),  # Groq GPT-oss 20B (legacy key)
     "groq-maverick": ("groq", "meta-llama/llama-4-maverick-17b-128e-instruct"),  # Groq Llama 4 Maverick
     "groq-scout": ("groq", "meta-llama/llama-4-scout-17b-16e-instruct"),  # Groq Llama 4 Scout
     "groq-kimi": ("groq", "moonshotai/kimi-k2-instruct"),  # Groq Kimi K2
@@ -128,6 +144,320 @@ AVAILABLE_MODELS = {
     # OpenRouter модели
     "openrouter-gemma": ("openrouter", "google/gemma-3n-e2b-it:free"),  # OpenRouter Gemma 3N
 }
+
+ADMIN_LEVEL_ICONS = {"admin": "👑", "sub+": "🚀", "subscriber": "⭐", "user": "👤"}
+ADMIN_LEVEL_PRIORITY = {"admin": 0, "sub+": 1, "subscriber": 2, "user": 3}
+ADMIN_LEVEL_LIMITS = {"admin": "∞", "sub+": "30", "subscriber": "5", "user": "3"}
+
+
+def _get_available_image_models(access_level: str) -> Dict[str, Dict[str, Any]]:
+    """Собирает все доступные image-модели для уровня доступа."""
+    models: Dict[str, Dict[str, Any]] = {}
+    if hf_replicate_client.api_key:
+        models.update(hf_replicate_client.get_models_for_user(access_level))
+    return models
+
+
+def _get_image_provider_name(model_key: str) -> str:
+    """Человеко-читаемое имя image-провайдера."""
+    if model_key.startswith("polza-"):
+        return "Polza.ai"
+    return "Unknown"
+
+
+def _format_admin_user_name(user: Dict[str, Any]) -> str:
+    """Собирает читаемое отображаемое имя пользователя для админки."""
+    first_name = (user.get("first_name") or "").strip()
+    username = (user.get("username") or "").strip()
+    user_id = user.get("user_id", "unknown")
+
+    name_parts = []
+    if first_name:
+        name_parts.append(first_name)
+    if username:
+        name_parts.append(f"@{username}")
+
+    return " ".join(name_parts) if name_parts else f"User {user_id}"
+
+
+def _format_admin_last_seen(value: Any) -> str:
+    """Короткий формат last_seen для списка пользователей."""
+    if not value:
+        return "неизвестно"
+
+    try:
+        raw_value = str(value).replace("Z", "+00:00")
+        dt = datetime.fromisoformat(raw_value)
+        if dt.tzinfo:
+            dt = dt.astimezone()
+        return dt.strftime("%d.%m %H:%M")
+    except Exception:
+        text = str(value).strip()
+        return text[:16] if text else "неизвестно"
+
+
+def _escape_markdown(text: Any) -> str:
+    """Минимальное экранирование для Markdown-сообщений Telegram."""
+    value = str(text or "")
+    for char in ("\\", "_", "*", "`", "["):
+        value = value.replace(char, f"\\{char}")
+    return value
+
+
+def _format_ban_status(ban_info: Optional[Dict[str, Any]]) -> str:
+    """Форматирует статус бана для карточки пользователя."""
+    if not ban_info:
+        return "нет"
+
+    if ban_info.get("permanent"):
+        return "перманентный"
+
+    banned_until = ban_info.get("banned_until")
+    if not banned_until:
+        return "активен"
+
+    try:
+        dt = datetime.fromisoformat(str(banned_until).replace("Z", "+00:00"))
+        if dt.tzinfo:
+            dt = dt.astimezone()
+        return f"до {dt.strftime('%d.%m %H:%M')}"
+    except Exception:
+        return str(banned_until)
+
+
+async def notify_admins_about_security_event(
+    db,
+    offender_user_id: str,
+    chat_id: str,
+    attempted_action: str,
+    username: str = "",
+    first_name: str = "",
+):
+    """Шлёт админам алерт о попытке использовать админ-функции без прав."""
+    cooldown_key = f"{offender_user_id}:{attempted_action}"
+    now = datetime.now()
+    last_alert = admin_alert_cooldowns.get(cooldown_key)
+    if last_alert and (now - last_alert).total_seconds() < 300:
+        return
+    admin_alert_cooldowns[cooldown_key] = now
+
+    identity_parts = []
+    if first_name:
+        identity_parts.append(first_name)
+    if username:
+        identity_parts.append(f"@{username}")
+    identity = " ".join(identity_parts) if identity_parts else f"user {offender_user_id}"
+
+    alert_text = (
+        "🚨 **Попытка доступа к админке**\n\n"
+        f"Пользователь: {identity}\n"
+        f"ID: `{offender_user_id}`\n"
+        f"Чат: `{chat_id}`\n"
+        f"Действие: `{attempted_action}`"
+    )
+
+    admin_ids = db.get_admin_user_ids()
+    for admin_id in admin_ids:
+        try:
+            await send_telegram_message(admin_id, alert_text, parse_mode="Markdown")
+        except Exception as e:
+            logger.warning(f"⚠️ Не удалось отправить security alert админу {admin_id}: {e}")
+
+    db.log_admin_action(
+        admin_user_id="system",
+        admin_username="system",
+        action_type="unauthorized_admin_access",
+        target_user_id=offender_user_id,
+        details={"attempted_action": attempted_action, "chat_id": chat_id},
+        success=False,
+    )
+
+
+def _build_admin_users_page(users: List[Dict[str, Any]], page_num: int, page_size: int = 12) -> tuple[str, List[List[Dict[str, str]]]]:
+    """Формирует текст и кнопки пагинации для /admin users."""
+    users_sorted = sorted(
+        users,
+        key=lambda u: (
+            ADMIN_LEVEL_PRIORITY.get(u.get("access_level", "user"), 4),
+            -int(u.get("today_generations", u.get("daily_count", 0)) or 0),
+            -int(u.get("total_count", 0) or 0),
+            str(u.get("first_name", "")).lower(),
+        )
+    )
+
+    total_users = len(users_sorted)
+    total_pages = max(1, (total_users + page_size - 1) // page_size)
+    page_num = max(0, min(page_num, total_pages - 1))
+    start_idx = page_num * page_size
+    end_idx = min(start_idx + page_size, total_users)
+
+    admin_count = sum(1 for u in users_sorted if u.get("access_level") == "admin")
+    sub_plus_count = sum(1 for u in users_sorted if u.get("access_level") == "sub+")
+    subscriber_count = sum(1 for u in users_sorted if u.get("access_level") == "subscriber")
+    active_today_count = sum(1 for u in users_sorted if int(u.get("today_generations", u.get("daily_count", 0)) or 0) > 0)
+
+    users_text = (
+        f"👥 Все пользователи (страница {page_num + 1}/{total_pages})\n\n"
+        f"📊 Всего: {total_users} | Активны сегодня: {active_today_count}\n"
+        f"👑 {admin_count} | 🚀 {sub_plus_count} | ⭐ {subscriber_count} | 👤 {total_users - admin_count - sub_plus_count - subscriber_count}\n\n"
+    )
+
+    for u in users_sorted[start_idx:end_idx]:
+        icon = ADMIN_LEVEL_ICONS.get(u.get("access_level", "user"), "👤")
+        ban_marker = " ❌" if u.get("is_banned") else ""
+        name = _format_admin_user_name(u) + ban_marker
+        uid = u.get("user_id", "unknown")
+        access_level = u.get("access_level", "user")
+        today = int(u.get("today_generations", u.get("daily_count", 0)) or 0)
+        total = int(u.get("total_count", 0) or 0)
+        limit = ADMIN_LEVEL_LIMITS.get(access_level, "3")
+        last_seen = _format_admin_last_seen(u.get("last_seen"))
+
+        users_text += (
+            f"{icon} {name}\n"
+            f"`{uid}` | сегодня: {today}/{limit} | всего: {total}\n"
+            f"был: {last_seen}\n\n"
+        )
+
+    buttons: List[List[Dict[str, str]]] = []
+    for u in users_sorted[start_idx:end_idx]:
+        uid = u.get("user_id", "unknown")
+        short_name = (_format_admin_user_name(u)[:20]).strip()
+        buttons.append([{
+            "text": f"👤 {short_name}",
+            "callback_data": f"admin_user:{uid}:{page_num}"
+        }])
+
+    nav_row: List[Dict[str, str]] = []
+    if page_num > 0:
+        nav_row.append({"text": "⬅️ Назад", "callback_data": f"users_page_{page_num - 1}"})
+    nav_row.append({"text": "🔄 Обновить", "callback_data": f"users_page_{page_num}"})
+    if end_idx < total_users:
+        nav_row.append({"text": "➡️ Далее", "callback_data": f"users_page_{page_num + 1}"})
+    buttons.append(nav_row)
+    buttons.append([{"text": "⬅️ К админке", "callback_data": "admin_home"}])
+
+    return users_text.strip(), buttons
+
+
+def _build_admin_panel() -> tuple[str, List[List[Dict[str, str]]]]:
+    """Возвращает компактную админ-панель с inline-навигацией."""
+    text = (
+        "👑 *Админ панель*\n\n"
+        "Быстрые разделы открываются кнопками ниже.\n\n"
+        "Текстовые команды:\n"
+        "• `/admin user <id>` карточка пользователя\n"
+        "• `/admin set_level <id> <level>` выдать уровень\n"
+        "• `/admin remove_level <id>` снять уровень\n"
+        "• `/admin ban <id> <days|permanent>` бан\n"
+        "• `/admin unban <id>` разбан\n"
+        "• `/admin pay_confirm <id>` подтвердить оплату\n"
+        "• `/admin pay_decline <id>` отклонить оплату\n"
+        "• `/admin broadcast <текст>` рассылка\n"
+        "• `/admin maintenance HH:MM` техработы"
+    )
+    buttons = [
+        [
+            {"text": "👥 Пользователи", "callback_data": "admin_users"},
+            {"text": "📊 Статистика", "callback_data": "admin_stats_panel"},
+        ],
+        [
+            {"text": "📋 Audit Log", "callback_data": "admin_logs"},
+            {"text": "ℹ️ Команды", "callback_data": "admin_help"},
+        ],
+    ]
+    return text, buttons
+
+
+def _build_admin_help_text() -> str:
+    return (
+        "ℹ️ *Команды админки*\n\n"
+        "Пользователи:\n"
+        "• `/admin users`\n"
+        "• `/admin user <id>`\n"
+        "• `/admin add_user <id>`\n"
+        "• `/admin remove_user <id>`\n"
+        "• `/admin set_level <id> <level>`\n"
+        "• `/admin remove_level <id>`\n\n"
+        "• `/admin ban <id> <days|permanent>`\n"
+        "• `/admin unban <id>`\n\n"
+        "Платежи:\n"
+        "• `/admin pay_confirm <id>`\n"
+        "• `/admin pay_decline <id>`\n"
+        "• `/admin reset_payment_limit <id>`\n\n"
+        "Сервис:\n"
+        "• `/admin stats`\n"
+        "• `/admin admin_stats`\n"
+        "• `/admin log [user_id] [limit]`\n"
+        "• `/admin maintenance HH:MM`\n"
+        "• `/admin maintenance_off`"
+    )
+
+
+def _build_admin_user_card(
+    db,
+    target_user_id: str,
+    page_num: int = 0
+) -> tuple[str, List[List[Dict[str, str]]]]:
+    """Строит карточку пользователя с быстрыми действиями."""
+    stats = db.get_user_stats(target_user_id)
+    if not stats:
+        return f"❌ Пользователь {target_user_id} не найден", [[{"text": "⬅️ Назад к списку", "callback_data": f"users_page_{page_num}"}]]
+
+    limit_info = db.check_generation_limit(target_user_id)
+    dialog_stats = db.get_user_dialog_stats(target_user_id) or {}
+    ban_info = db.get_user_ban(target_user_id)
+
+    display_name = _escape_markdown(_format_admin_user_name(stats))
+    access_level = stats.get("access_level", "user")
+    today = stats.get("today_generations", stats.get("daily_count", 0))
+    daily_limit = limit_info.get("daily_limit", 3)
+    total = stats.get("total_count", 0)
+    messages_today = stats.get("messages_today", 0)
+    last_seen = _format_admin_last_seen(stats.get("last_seen"))
+    first_seen = _format_admin_last_seen(stats.get("created_at"))
+
+    user_card = (
+        f"👤 *Карточка пользователя*\n\n"
+        f"{ADMIN_LEVEL_ICONS.get(access_level, '👤')} {display_name}\n"
+        f"`{target_user_id}`\n\n"
+        f"Уровень: *{access_level}*\n"
+        f"Генерации сегодня: *{today}/{daily_limit if daily_limit != -1 else '∞'}*\n"
+        f"Всего генераций: *{total}*\n"
+        f"Сообщений сегодня: *{messages_today}*\n"
+        f"Всего сообщений: *{dialog_stats.get('total_messages', 0)}*\n"
+        f"Бан: *{_format_ban_status(ban_info)}*\n"
+        f"Последний визит: *{last_seen}*\n"
+        f"В базе с: *{first_seen}*"
+    )
+
+    buttons: List[List[Dict[str, str]]] = []
+    action_row: List[Dict[str, str]] = []
+
+    if access_level != "sub+":
+        action_row.append({"text": "🚀 Выдать sub+", "callback_data": f"admin_user_action:subplus:{target_user_id}:{page_num}"})
+    if access_level != "subscriber":
+        action_row.append({"text": "⭐ Сделать subscriber", "callback_data": f"admin_user_action:subscriber:{target_user_id}:{page_num}"})
+    if access_level != "user":
+        buttons.append(action_row)
+        action_row = []
+        action_row.append({"text": "👤 Сделать user", "callback_data": f"admin_user_action:user:{target_user_id}:{page_num}"})
+    if action_row:
+        buttons.append(action_row)
+
+    buttons.append([
+        {"text": "🔄 Сбросить лимит", "callback_data": f"admin_user_action:reset:{target_user_id}:{page_num}"},
+        {"text": "📚 История", "callback_data": f"admin_user_action:history:{target_user_id}:{page_num}"},
+    ])
+    buttons.append([{"text": "✉️ Написать", "callback_data": f"admin_user_action:message:{target_user_id}:{page_num}"}])
+    if ban_info:
+        buttons.append([{"text": "✅ Разбанить", "callback_data": f"admin_user_action:unban:{target_user_id}:{page_num}"}])
+    else:
+        buttons.append([{"text": "🔨 Бан", "callback_data": f"admin_user_action:ban_prompt:{target_user_id}:{page_num}"}])
+    buttons.append([{"text": "⬅️ Назад к списку", "callback_data": f"users_page_{page_num}"}])
+    buttons.append([{"text": "⬅️ К админке", "callback_data": "admin_home"}])
+
+    return user_card, buttons
 
 
 async def show_start_menu(chat_id: str):
@@ -156,45 +486,33 @@ async def show_start_menu(chat_id: str):
         ]
     ]
 
-    welcome_text = """👋 **Привет! Я LiraAI** 🤖
+    welcome_text = """👋 Привет! Я LiraAI 🤖
 
-Я твой персональный AI-ассистент!
+Я бесплатный AI-ассистент в Telegram.
 
-**Что я умею:**
-• 💬 Общаться на русском языке
-• 🎨 Генерировать изображения
-• 🎤 Распознавать голосовые сообщения
-• 📸 Анализировать фотографии
+Что я умею:
+• 💬 отвечать на вопросы и помогать с текстом
+• 🎤 распознавать голосовые сообщения
+• 🔊 отправлять голосовой ответ
+• 📸 анализировать фотографии
+• 🎨 генерировать изображения через Z-Image
 
-🆓 **Все модели БЕСПЛАТНЫЕ!**
+🆓 Общение, голос и анализ фото доступны бесплатно.
 
-⚡ **Groq (очень быстрые):**
-• Llama 3.3 70B - лучшая для русского
-• Llama 4 Maverick - новейшая от Meta
-• Llama 4 Scout - легкая и быстрая
-• Kimi K2 - от Moonshot AI
+Доступные модели:
+• Groq: GPT-oss 20B, Llama 4 Maverick, Llama 4 Scout, Kimi K2
+• Cerebras: Llama 3.1 8B, GPT-oss 120B
+• OpenRouter: Gemma 3N
 
-🚀 **Cerebras (сверхбыстрые):**
-• Llama 3.1 8B - 800 токенов/сек
-• GPT-oss 120B - большая модель
-
-☁️ **OpenRouter (бесплатные):**
-• Gemma 3N - от Google
-
-🎨 **Генерация изображений:**
-• Z-Image (Polza.ai) - работает ✅
-
-**Обо мне:**
-У меня есть один разработчик - Danil Alekseevich.
-Познакомиться с ним можно в канале @liranexus (кнопка "📢 Подписаться").
-
-[Подпишитесь](https://t.me/liranexus) чтобы следить за обновлениями!
-
+Обо мне:
+Бота делает LiraDev.
+Новости и обновления: @liranexus
+Помощь : @suplira
 ━━━━━━━━━━━━━━━━━━━━
-📱 **Начни с выбора модели** - нажми "🤖 Выбрать модель" ниже!
+📱 Начни с выбора модели или просто отправь сообщение
 ━━━━━━━━━━━━━━━━━━━━
 
-Выбери команду ниже 👇"""
+Выбери действие кнопками ниже 👇"""
 
     await send_telegram_message_with_buttons(chat_id, welcome_text, buttons)
 
@@ -262,6 +580,30 @@ async def process_message(message: Dict[str, Any], bot_token: str):
         db = get_database()
         db.add_or_update_user(user_id, username=username, first_name=first_name, last_name=last_name)
 
+        # Алерт админам при попытке использовать админ-команды без прав
+        if text.startswith("/admin") and not db.is_admin(user_id):
+            await notify_admins_about_security_event(
+                db,
+                offender_user_id=user_id,
+                chat_id=chat_id,
+                attempted_action=text[:120],
+                username=username,
+                first_name=first_name,
+            )
+            await send_telegram_message(chat_id, "❌ У вас нет прав администратора")
+            return
+
+        # Проверка активного бана
+        if not db.is_admin(user_id):
+            ban_info = db.get_user_ban(user_id)
+            if ban_info:
+                until_text = "навсегда" if ban_info.get("permanent") else _format_ban_status(ban_info)
+                await send_telegram_message(
+                    chat_id,
+                    f"⛔ Вы заблокированы в боте.\n\nСрок: {until_text}\nЕсли считаете это ошибкой, свяжитесь с поддержкой."
+                )
+                return
+
         # Проверяем режим тех.работ (только для приватных чатов)
         if chat_type == "private":
             maint_status = db.get_maintenance_mode()
@@ -271,7 +613,6 @@ async def process_message(message: Dict[str, Any], bot_token: str):
             # Проверяем время окончания тех.работ
             if maintenance_mode["enabled"] and maintenance_mode["until_time"]:
                 try:
-                    from datetime import datetime
                     until_str = maintenance_mode["until_time"]
                     # Парсим время в формате HH:MM
                     until_time = datetime.strptime(until_str, "%H:%M").time()
@@ -298,6 +639,222 @@ async def process_message(message: Dict[str, Any], bot_token: str):
                         f"🔧 **Технические работы{until_msg}**\n\nБот временно недоступен. Следите за обновлениями в канале @liranexus"
                     )
                     return  # Прерываем обработку
+
+            # Ожидаем ввод длительности бана от администратора
+            if text and user_id in pending_ban_input and db.is_admin(user_id):
+                pending = pending_ban_input[user_id]
+                target_user_id = pending["target_user_id"]
+                page_num = pending.get("page_num", 0)
+                ban_text = text.strip().lower()
+
+                if ban_text == "/cancel":
+                    del pending_ban_input[user_id]
+                    await send_telegram_message(chat_id, "❌ Выдача бана отменена.")
+                    return
+
+                if ban_text in {"perm", "permanent", "навсегда", "бан навсегда"}:
+                    success = db.set_user_ban(target_user_id, banned_by=user_id, days=None, reason="admin_card")
+                    if success:
+                        db.log_admin_action(
+                            admin_user_id=user_id,
+                            admin_username=username,
+                            action_type="ban_user",
+                            target_user_id=target_user_id,
+                            new_value="permanent",
+                            details={"inline_admin_user_card": True},
+                            chat_id=chat_id,
+                            message_id=message_id,
+                            success=True
+                        )
+                        try:
+                            await send_telegram_message(
+                                target_user_id,
+                                "⛔ **Вы заблокированы в боте навсегда.**\n\nЕсли считаете это ошибкой, свяжитесь с поддержкой.",
+                                parse_mode="Markdown"
+                            )
+                        except Exception as e:
+                            logger.warning(f"⚠️ Не удалось отправить уведомление о бане {target_user_id}: {e}")
+                        await send_telegram_message(chat_id, f"⛔ Пользователь {target_user_id} забанен навсегда.")
+                    else:
+                        await send_telegram_message(chat_id, f"❌ Не удалось забанить пользователя {target_user_id}.")
+                    del pending_ban_input[user_id]
+                    return
+
+                if ban_text.isdigit() and int(ban_text) > 0:
+                    days = int(ban_text)
+                    success = db.set_user_ban(target_user_id, banned_by=user_id, days=days, reason="admin_card")
+                    if success:
+                        db.log_admin_action(
+                            admin_user_id=user_id,
+                            admin_username=username,
+                            action_type="ban_user",
+                            target_user_id=target_user_id,
+                            new_value=f"{days}_days",
+                            details={"inline_admin_user_card": True, "days": days},
+                            chat_id=chat_id,
+                            message_id=message_id,
+                            success=True
+                        )
+                        try:
+                            await send_telegram_message(
+                                target_user_id,
+                                f"⛔ **Вы заблокированы в боте на {days} дн.**\n\nЕсли считаете это ошибкой, свяжитесь с поддержкой.",
+                                parse_mode="Markdown"
+                            )
+                        except Exception as e:
+                            logger.warning(f"⚠️ Не удалось отправить уведомление о бане {target_user_id}: {e}")
+                        await send_telegram_message(chat_id, f"⛔ Пользователь {target_user_id} забанен на {days} дн.")
+                    else:
+                        await send_telegram_message(chat_id, f"❌ Не удалось забанить пользователя {target_user_id}.")
+                    del pending_ban_input[user_id]
+                    return
+
+                await send_telegram_message(
+                    chat_id,
+                    f"Введите число дней для бана пользователя `{target_user_id}` или `permanent`/`навсегда`.\n/cancel - отмена",
+                    parse_mode="Markdown"
+                )
+                return
+
+            # Ожидаем ввод сообщения пользователю от администратора
+            if text and user_id in pending_admin_messages and db.is_admin(user_id):
+                pending = pending_admin_messages[user_id]
+                target_user_id = pending["target_user_id"]
+                created_at = pending.get("created_at")
+
+                # Авто-сброс режима отправки через 5 минут
+                if created_at and (datetime.now() - created_at).total_seconds() > 300:
+                    del pending_admin_messages[user_id]
+                    await send_telegram_message(chat_id, "⌛ Режим отправки сообщения истёк. Нажмите `✉️ Написать` ещё раз.", parse_mode="Markdown")
+                    return
+
+                if text.strip() == "/cancel":
+                    del pending_admin_messages[user_id]
+                    await send_telegram_message(chat_id, "❌ Отправка сообщения отменена.")
+                    return
+
+                # Не перехватываем команды и системные кнопки
+                if text.startswith("/") or text in BOT_MODES.values() or text == "◀️ Назад к меню":
+                    del pending_admin_messages[user_id]
+                    # Продолжаем обычную обработку команды/кнопки ниже
+                else:
+                    outbound_text = (
+                        "✉️ **Сообщение от администрации LiraAI**\n\n"
+                        f"{text}\n\n"
+                        "Чтобы ответить, используйте ответ на это сообщение."
+                    )
+                    sent_message_id = await send_telegram_message_get_id(
+                        target_user_id,
+                        outbound_text,
+                        parse_mode="Markdown"
+                    )
+
+                    if sent_message_id:
+                        support_reply_routes[target_user_id] = {
+                            "admin_id": user_id,
+                            "bot_message_id": sent_message_id,
+                        }
+                        db.log_admin_action(
+                            admin_user_id=user_id,
+                            admin_username=username,
+                            action_type="send_user_message",
+                            target_user_id=target_user_id,
+                            details={"inline_admin_user_card": True},
+                            chat_id=chat_id,
+                            message_id=message_id,
+                            success=True
+                        )
+                        await send_telegram_message(chat_id, f"✅ Сообщение отправлено пользователю {target_user_id}.")
+                    else:
+                        await send_telegram_message(chat_id, f"❌ Не удалось отправить сообщение пользователю {target_user_id}.")
+
+                    del pending_admin_messages[user_id]
+                    return
+
+            # Быстрый reply администратора на ответ пользователя
+            if text and db.is_admin(user_id):
+                reply_to = message.get("reply_to_message", {}) or {}
+                reply_to_message_id = reply_to.get("message_id")
+                route = admin_reply_routes.get(user_id, {}).get(reply_to_message_id)
+
+                if route:
+                    if text.startswith("/"):
+                        # Не перехватываем команды, пусть обрабатываются штатно ниже
+                        pass
+                    else:
+                        target_user_id = route.get("target_user_id")
+                        source_user_id = route.get("source_user_id", target_user_id)
+                        outbound_text = (
+                            "✉️ **Ответ от администрации LiraAI**\n\n"
+                            f"{text}\n\n"
+                            "Чтобы продолжить диалог, используйте ответ на это сообщение."
+                        )
+                        sent_message_id = await send_telegram_message_get_id(
+                            target_user_id,
+                            outbound_text,
+                            parse_mode="Markdown"
+                        )
+
+                        if sent_message_id:
+                            support_reply_routes[target_user_id] = {
+                                "admin_id": user_id,
+                                "bot_message_id": sent_message_id,
+                            }
+                            db.log_admin_action(
+                                admin_user_id=user_id,
+                                admin_username=username,
+                                action_type="reply_to_user_message",
+                                target_user_id=target_user_id,
+                                details={
+                                    "source_user_id": source_user_id,
+                                    "reply_to_admin_message_id": reply_to_message_id,
+                                    "reply_via_thread": True,
+                                },
+                                chat_id=chat_id,
+                                message_id=message_id,
+                                success=True
+                            )
+                            await send_telegram_message(
+                                chat_id,
+                                f"✅ Ответ отправлен пользователю {target_user_id}.",
+                                reply_to_message_id=message_id
+                            )
+                        else:
+                            await send_telegram_message(
+                                chat_id,
+                                f"❌ Не удалось отправить ответ пользователю {target_user_id}.",
+                                reply_to_message_id=message_id
+                            )
+                        return
+
+            # Ответ пользователя на сообщение от администрации
+            if text and not db.is_admin(user_id):
+                reply_to = message.get("reply_to_message", {}) or {}
+                route = support_reply_routes.get(user_id)
+                if route and reply_to.get("message_id") == route.get("bot_message_id"):
+                    admin_id = route.get("admin_id")
+                    user_identity = _escape_markdown(_format_admin_user_name({
+                        "first_name": first_name,
+                        "username": username,
+                        "user_id": user_id,
+                    }))
+                    forwarded_text = (
+                        "📩 **Ответ пользователя на сообщение администрации**\n\n"
+                        f"От: {user_identity}\n"
+                        f"ID: `{user_id}`\n\n"
+                        f"{_escape_markdown(text)}"
+                    )
+                    admin_message_id = await send_telegram_message_get_id(
+                        admin_id,
+                        forwarded_text,
+                        parse_mode="Markdown"
+                    )
+                    if admin_message_id:
+                        admin_reply_routes.setdefault(admin_id, {})[admin_message_id] = {
+                            "target_user_id": user_id,
+                            "source_user_id": user_id,
+                        }
+                    return
         
         # === ГРУППОВОЙ ЧАТ ===
         if chat_type in ("group", "supergroup"):
@@ -377,7 +934,7 @@ async def process_message(message: Dict[str, Any], bot_token: str):
             if text:
                 if text.startswith("/generate ") or text.startswith("/рисунок "):
                     prompt = text.replace("/generate ", "").replace("/рисунок ", "")
-                    await handle_image_generation(chat_id, prompt)
+                    await handle_image_generation(chat_id, user_id, prompt)
                     return
                 
                 # Убираем упоминание бота из текста
@@ -509,7 +1066,7 @@ async def process_message(message: Dict[str, Any], bot_token: str):
                         keyboard = create_model_selection_keyboard()
                         await send_telegram_message(
                             chat_id,
-                            "🤖 **Выбор модели**\n\nВыберите модель для общения:\n\n🚀 Llama 3.3 - лучшая для русского\n🦙 Llama 4 - новейшая от Meta\n🔍 Scout - легкая и быстрая\n🌙 Kimi K2 - от Moonshot AI\n⚡ Cerebras Llama 3.1 - сверхбыстрая\n🧠 GPT-oss 120B - большая модель",
+                            "🤖 **Выбор модели**\n\nВыберите модель на клавиатуре ниже.",
                             reply_markup=keyboard,
                             parse_mode="Markdown"
                         )
@@ -619,11 +1176,11 @@ async def process_message(message: Dict[str, Any], bot_token: str):
                     return
 
                 # Обработка выбора модели (reply-кнопки)
-                if text in ["🚀 Groq Llama 3.3", "🦙 Groq Llama 4", "🔍 Groq Scout", "🌙 Groq Kimi K2",
+                if text in ["🧠 Groq GPT-oss 20B", "🦙 Groq Llama 4", "🔍 Groq Scout", "🌙 Groq Kimi K2",
                            "⚡ Cerebras Llama 3.1", "🧠 Cerebras GPT-oss 120B", "☁️ OpenRouter Gemma 3N"]:
 
                     model_map = {
-                        "🚀 Groq Llama 3.3": "groq-llama",
+                        "🧠 Groq GPT-oss 20B": "groq-llama",
                         "🦙 Groq Llama 4": "groq-maverick",
                         "🔍 Groq Scout": "groq-scout",
                         "🌙 Groq Kimi K2": "groq-kimi",
@@ -638,7 +1195,7 @@ async def process_message(message: Dict[str, Any], bot_token: str):
                         user_models[user_id] = model_key
 
                         model_names = {
-                            "groq-llama": "🚀 Llama 3.3 70B",
+                            "groq-llama": "🧠 GPT-oss 20B",
                             "groq-maverick": "🦙 Llama 4 Maverick",
                             "groq-scout": "🔍 Llama 4 Scout",
                             "groq-kimi": "🌙 Kimi K2",
@@ -675,7 +1232,7 @@ async def process_message(message: Dict[str, Any], bot_token: str):
                         user_models[user_id] = model_key
 
                         model_names = {
-                            "groq-llama": "🚀 Llama 3.3 70B",
+                            "groq-llama": "🧠 GPT-oss 20B",
                             "groq-maverick": "🦙 Llama 4 Maverick",
                             "groq-scout": "🔍 Llama 4 Scout",
                             "groq-kimi": "🌙 Kimi K2",
@@ -733,7 +1290,7 @@ async def process_message(message: Dict[str, Any], bot_token: str):
                 if text == "/model":
                     current_model = user_models.get(user_id, "groq-llama")
                     model_names = {
-                        "groq-llama": "🚀 Groq Llama 3.3",
+                        "groq-llama": "🧠 Groq GPT-oss 20B",
                         "groq-maverick": "🦙 Groq Llama 4",
                         "groq-scout": "🔍 Groq Scout",
                         "groq-kimi": "🌙 Groq Kimi K2",
@@ -773,7 +1330,7 @@ async def process_message(message: Dict[str, Any], bot_token: str):
                 if text == "/models":
                     buttons = [
                         [
-                            {"text": "🚀 Groq Llama 3.3", "callback_data": "model_groq-llama"},
+                            {"text": "🧠 Groq GPT-oss 20B", "callback_data": "model_groq-llama"},
                             {"text": "🦙 Groq Llama 4 Maverick", "callback_data": "model_groq-maverick"},
                         ],
                         [
@@ -781,20 +1338,16 @@ async def process_message(message: Dict[str, Any], bot_token: str):
                             {"text": "🌙 Groq Kimi K2", "callback_data": "model_groq-kimi"},
                         ],
                         [
-                            {"text": "☀️ Solar Pro 3", "callback_data": "model_solar"},
-                            {"text": "🔱 Trinity Mini", "callback_data": "model_trinity"},
-                        ],
-                        [
-                            {"text": "🤖 GLM-4.5", "callback_data": "model_glm"},
+                            {"text": "☁️ OpenRouter Gemma 3N", "callback_data": "model_openrouter-gemma"},
                         ]
                     ]
-                    current_model = user_models.get(user_id, "llama-3.3-70b-versatile")
-                    model_name = [k for k, v in AVAILABLE_MODELS.items() if v == current_model]
+                    current_model = user_models.get(user_id, "groq-scout")
+                    model_name = [k for k, v in AVAILABLE_MODELS.items() if k == current_model]
                     model_name = model_name[0] if model_name else "groq-llama"
 
                     await send_telegram_message_with_buttons(
                         chat_id,
-                        f"🔧 Выбор модели\n\nТекущая модель: {model_name}\n\nВыберите модель для общения:",
+                        f"🔧 Выбор модели\n\nТекущая модель: {model_name}\n\nВыберите модель кнопками ниже.",
                         buttons
                     )
                     return
@@ -819,7 +1372,7 @@ async def process_message(message: Dict[str, Any], bot_token: str):
 
 Модели (все БЕСПЛАТНЫЕ!):
 🚀 Groq (очень быстрые):
-• Llama 3.3 70B - лучшая для русского
+• GPT-oss 20B - стабильная новая базовая
 • Llama 4 Maverick - новейшая от Meta
 • Llama 4 Scout - легкая и быстрая
 • Kimi K2 - от Moonshot AI
@@ -847,60 +1400,112 @@ async def process_message(message: Dict[str, Any], bot_token: str):
                         await send_telegram_message(chat_id, "❌ У вас нет прав администратора")
                         return
 
-                    admin_text = """👑 Админ панель
+                    admin_text, admin_buttons = _build_admin_panel()
+                    await send_telegram_message_with_buttons(chat_id, admin_text, admin_buttons)
+                    return
 
-📋 Управление пользователями:
-• /admin users - Список всех пользователей
-• /admin add_user [user_id] - Добавить пользователя
-• /admin remove_user [user_id] - Удалить пользователя
-• /admin set_level [user_id] [level] - Выдать уровень
-• /admin remove_level [user_id] - Снять уровень
+                if text.startswith("/admin user "):
+                    from backend.database.users_db import get_database
+                    db = get_database()
 
-💳 Подтверждение оплаты (ЮMoney):
-• /admin pay_confirm [user_id] - Подтвердить оплату sub+
-• /admin pay_decline [user_id] - Отклонить оплату sub+
-• /admin reset_payment_limit [user_id] - Сбросить лимит нажатий кнопки "Я оплатил"
+                    if not db.is_admin(user_id):
+                        await send_telegram_message(chat_id, "❌ У вас нет прав администратора")
+                        return
 
-📢 Рассылка уведомлений:
-• /admin broadcast [сообщения] - Рассылка всем пользователям
-• /admin mes [сообщения] - Короткая команда для рассылки
+                    target_user_id = text.replace("/admin user ", "").strip()
+                    if not target_user_id:
+                        await send_telegram_message(chat_id, "❌ Использование: /admin user <user_id>")
+                        return
 
-📚 История диалогов (долговременная память):
-• /admin history <user_id> [limit] - История сообщенияй пользователя
-• /admin dialog_stats <user_id> - Статистика диалога пользователя
-• /admin cleanup_dialogs [days] - Очистка истории старше N дней (по умолчанию 30)
+                    user_card, buttons = _build_admin_user_card(db, target_user_id, page_num=0)
+                    await send_telegram_message_with_buttons(chat_id, user_card, buttons)
+                    return
 
-📋 Audit Log (действия администраторов):
-• /admin log - Последние действия (ваши)
-• /admin log [user_id] [limit] - Логи по пользователю
-• /admin log --admin=[user_id] - Логи администратора
-• /admin admin_stats - Ваша статистика как администратора
+                if text.startswith("/admin ban "):
+                    from backend.database.users_db import get_database
+                    db = get_database()
 
-🔧 Тех.работы:
-• /admin maintenance [HH:MM] - Включить тех.работы
-• /admin maintenance_off - Выключить тех.работы
+                    if not db.is_admin(user_id):
+                        await send_telegram_message(chat_id, "❌ У вас нет прав администратора")
+                        return
 
-📊 Статистика:
-• /admin stats - Общая статистика бота
-• /stats - Ваша личная статистика
+                    parts = text.replace("/admin ban ", "").strip().split()
+                    if len(parts) != 2:
+                        await send_telegram_message(chat_id, "❌ Использование: /admin ban <user_id> <days|permanent>")
+                        return
 
-🔑 Уровни доступа:
-• admin - безлимитная генерация
-• subscriber - 5 генераций в день
-• sub+ - 30 генераций в день (оплата 100₽)
-• user - 3 генерации в день
+                    target_user_id, duration_raw = parts
+                    if not target_user_id.isdigit():
+                        await send_telegram_message(chat_id, "❌ user_id должен быть числом")
+                        return
 
-💡 Примеры:
-/admin mes Друзья, Grok недоступен, пользуйтесь OpenRouter
-/admin history 1658547011 50
-/admin dialog_stats 1658547011
-/admin pay_confirm 999888777
-/admin log 1658547011 50
-/admin log --admin=123456789
-/admin set_level 123456789 subscriber
-/admin maintenance 17:00
-"""
-                    await send_telegram_message(chat_id, admin_text)
+                    if duration_raw.lower() in {"perm", "permanent", "навсегда"}:
+                        success = db.set_user_ban(target_user_id, banned_by=user_id, days=None, reason="admin_command")
+                        new_value = "permanent"
+                    elif duration_raw.isdigit() and int(duration_raw) > 0:
+                        days = int(duration_raw)
+                        success = db.set_user_ban(target_user_id, banned_by=user_id, days=days, reason="admin_command")
+                        new_value = f"{days}_days"
+                    else:
+                        await send_telegram_message(chat_id, "❌ Укажите число дней или `permanent`", parse_mode="Markdown")
+                        return
+
+                    if success:
+                        db.log_admin_action(
+                            admin_user_id=user_id,
+                            admin_username=username,
+                            action_type="ban_user",
+                            target_user_id=target_user_id,
+                            new_value=new_value,
+                            details={"admin_command": True},
+                            chat_id=chat_id,
+                            message_id=message_id,
+                            success=True
+                        )
+                        try:
+                            if new_value == "permanent":
+                                await send_telegram_message(target_user_id, "⛔ **Вы заблокированы в боте навсегда.**", parse_mode="Markdown")
+                            else:
+                                await send_telegram_message(target_user_id, f"⛔ **Вы заблокированы в боте на {days} дн.**", parse_mode="Markdown")
+                        except Exception as e:
+                            logger.warning(f"⚠️ Не удалось отправить уведомление о бане {target_user_id}: {e}")
+                        await send_telegram_message(chat_id, f"⛔ Бан выдан пользователю {target_user_id}: {new_value}")
+                    else:
+                        await send_telegram_message(chat_id, f"❌ Не удалось выдать бан пользователю {target_user_id}")
+                    return
+
+                if text.startswith("/admin unban "):
+                    from backend.database.users_db import get_database
+                    db = get_database()
+
+                    if not db.is_admin(user_id):
+                        await send_telegram_message(chat_id, "❌ У вас нет прав администратора")
+                        return
+
+                    target_user_id = text.replace("/admin unban ", "").strip()
+                    if not target_user_id.isdigit():
+                        await send_telegram_message(chat_id, "❌ Использование: /admin unban <user_id>")
+                        return
+
+                    success = db.remove_user_ban(target_user_id)
+                    if success:
+                        db.log_admin_action(
+                            admin_user_id=user_id,
+                            admin_username=username,
+                            action_type="unban_user",
+                            target_user_id=target_user_id,
+                            details={"admin_command": True},
+                            chat_id=chat_id,
+                            message_id=message_id,
+                            success=True
+                        )
+                        try:
+                            await send_telegram_message(target_user_id, "✅ **Блокировка в боте снята.**", parse_mode="Markdown")
+                        except Exception as e:
+                            logger.warning(f"⚠️ Не удалось отправить уведомление о разбане {target_user_id}: {e}")
+                        await send_telegram_message(chat_id, f"✅ Бан снят с пользователя {target_user_id}")
+                    else:
+                        await send_telegram_message(chat_id, f"❌ Не удалось снять бан с пользователя {target_user_id}")
                     return
 
                 # Команда /stats - статистика пользователя
@@ -1187,40 +1792,7 @@ async def process_message(message: Dict[str, Any], bot_token: str):
                     mode_mgr.set_mode(user_id, "admin_users_page_0")
 
                     users = db.get_all_users()
-                    level_icons = {"admin": "👑", "sub+": "🚀", "subscriber": "⭐", "user": "👤"}
-
-                    # Сортировка по уровню доступа: admin → sub+ → subscriber → user
-                    level_priority = {"admin": 0, "sub+": 1, "subscriber": 2, "user": 3}
-                    users_sorted = sorted(users, key=lambda u: level_priority.get(u.get('access_level', 'user'), 4))
-
-                    users_text = "👥 Все пользователи (страница 1):\n\n"
-                    page_size = 20
-                    for u in users_sorted[:page_size]:
-                        icon = level_icons.get(u.get('access_level', 'user'), '👤')
-                        first_name = u.get('first_name', '')
-                        username = u.get('username', '')
-                        uid = u.get('user_id', 'unknown')
-                        daily = u.get('daily_count', 0)
-
-                        name_parts = []
-                        if first_name:
-                            name_parts.append(first_name)
-                        if username:
-                            name_parts.append(f"@{username}")
-
-                        name = " ".join(name_parts) if name_parts else f"User {uid}"
-
-                        users_text += f"{icon} {name} ({uid}) - {daily} сегодня\n"
-
-                    total_pages = (len(users_sorted) + page_size - 1) // page_size
-                    if total_pages > 1:
-                        users_text += f"\n📊 Всего: {len(users_sorted)} пользователей | Страница 1 из {total_pages}"
-
-                    # Создаём inline клавиатуру с пагинацией
-                    buttons = []
-                    if total_pages > 1:
-                        nav_row = [{"text": "➡️ Далее", "callback_data": "users_page_1"}]
-                        buttons.append(nav_row)
+                    users_text, buttons = _build_admin_users_page(users, page_num=0)
 
                     await send_telegram_message_with_buttons(chat_id, users_text, buttons)
                     return
@@ -1594,7 +2166,7 @@ async def process_message(message: Dict[str, Any], bot_token: str):
 • Первое сообщения: {stats.get('first_message', 'Н/Д')[:19] if stats.get('first_message') else 'Н/Д'}
 • Последнее сообщения: {stats.get('last_message', 'Н/Д')[:19] if stats.get('last_message') else 'Н/Д'}
 
-📝 Последние {len(history)} сообщения��:
+📝 Последние {len(history)} сообщений:
 """
                     for msg in history[-10:]:  # Показываем последние 10
                         role_icon = "👤" if msg["role"] == "user" else "🤖"
@@ -2094,7 +2666,7 @@ async def handle_feedback_bot_voice(chat_id: str, user_id: str, message: Dict[st
         logger.info(f"[FeedbackBot] 🎙️ Начинаю распознавание речи...")
         from backend.voice.stt import SpeechToText
         stt = SpeechToText()
-        recognized_text = stt.speech_to_text(downloaded_path, language="ru")
+        recognized_text = await stt.speech_to_text(downloaded_path, language="ru")
         
         # Удаляем временный файл
         try:
@@ -2348,13 +2920,14 @@ async def handle_text_message(chat_id: str, user_id: str, text: str, is_group: b
                 return
         # Получаем модель пользователя
         model_key = user_models.get(user_id, "groq-llama")
-        model_info = AVAILABLE_MODELS.get(model_key, ("groq", "llama-3.3-70b-versatile"))
+        model_info = AVAILABLE_MODELS.get(model_key, ("groq", "openai/gpt-oss-20b"))
         client_type, model = model_info
         
         logger.info(f"🎯 {user_id} использует модель: {model_key} ({client_type} - {model})")
 
         # Системный промпт для русского языка с памятью
-        system_prompt = """# РОЛЬ И ЛИЧНОСТЬ
+        system_prompt = """# О БОТЕ И ПЛАТФОРМЕ
+Ты находишься в Telegram боте @liranexus. Пользователи общаются с тобой через текстовые сообщения, голосовые сообщения и фотографии в Telegram.
 Ты — LiraAI, умный, заботливый и оптимистичный AI-ассистент женского пола.
 Твой стиль общения: тёплый, поддерживающий, немного с лёгким юмором, но всегда по делу.
 Ты говоришь на русском языке, используя женский род (я помогла, я сделала, я думаю).
@@ -2403,21 +2976,21 @@ async def handle_text_message(chat_id: str, user_id: str, text: str, is_group: b
 
         # Graceful degradation: пробуем модель, при ошибке предлагаем альтернативу
         response = None
-        # Fallback последовательность: оригинал → Groq → Cerebras → Solar
+        # Fallback последовательность: оригинал → Groq → Cerebras → OpenRouter
         fallback_sequence = [(client_type, model, model_key)]
         if client_type == "cerebras":
             fallback_sequence.extend([
-                ("groq", "llama-3.3-70b-versatile", "groq-llama"),
-                ("openrouter", "upstage/solar-pro-3:free", "solar"),
+                ("groq", "meta-llama/llama-4-scout-17b-16e-instruct", "groq-scout"),
+                ("openrouter", "google/gemma-3-4b-it:free", "openrouter-gemma"),
             ])
         elif client_type == "groq":
             fallback_sequence.extend([
                 ("cerebras", "llama3.1-8b", "cerebras-llama"),
-                ("openrouter", "upstage/solar-pro-3:free", "solar"),
+                ("openrouter", "google/gemma-3-4b-it:free", "openrouter-gemma"),
             ])
         else:  # openrouter
             fallback_sequence.extend([
-                ("groq", "llama-3.3-70b-versatile", "groq-llama"),
+                ("groq", "meta-llama/llama-4-scout-17b-16e-instruct", "groq-scout"),
                 ("cerebras", "llama3.1-8b", "cerebras-llama"),
             ])
 
@@ -2446,7 +3019,7 @@ async def handle_text_message(chat_id: str, user_id: str, text: str, is_group: b
                 if attempt > 0:
                     # Fallback сработал - уведомляем
                     model_names_display = {
-                        "groq-llama": "🚀 Groq Llama 3.3",
+                        "groq-llama": "🧠 Groq GPT-oss 20B",
                         "cerebras-llama": "⚡ Cerebras Llama 3.1",
                         "solar": "☀️ Solar Pro 3",
                     }
@@ -2492,7 +3065,7 @@ async def handle_text_message(chat_id: str, user_id: str, text: str, is_group: b
 
 
 async def handle_image_generation(chat_id: str, user_id: str, prompt: str, model_key: str = None):
-    """Обрабатывает запрос на генерацию изображения через Gemini/HF+Replicate с проверкой лимитов и уровней доступа"""
+    """Обрабатывает запрос на генерацию изображения через Polza.ai / KIE.ai."""
     from backend.database.users_db import get_database
     import os
 
@@ -2557,33 +3130,16 @@ async def handle_image_generation(chat_id: str, user_id: str, prompt: str, model
             if model_key:
                 logger.info(f"💾 Загружена image_model из БД для {user_id}: {model_key}")
 
-        # Определяем тип модели (Polza.ai или Gemini)
-        is_hf_model = model_key and model_key.startswith("polza-")
-        
-        # Проверяем доступность модели для уровня доступа
-        if is_hf_model:
-            available_models = hf_replicate_client.get_models_for_user(access_level)
-        else:
-            available_models = gemini_image_client.get_models_for_user(access_level)
+        available_models = _get_available_image_models(access_level)
+        if not available_models:
+            await send_telegram_message(
+                chat_id,
+                "❌ Сейчас нет доступных моделей генерации изображений. Проверьте настройки Polza.ai / KIE.ai."
+            )
+            return
 
         if not model_key or model_key not in available_models:
-            # Пробуем получить модель из HF+Replicate сначала, потом Gemini
-            if hf_replicate_client.api_key:
-                hf_models = hf_replicate_client.get_models_for_user(access_level)
-                if hf_models:
-                    model_key = list(hf_models.keys())[0]
-                    is_hf_model = True
-                    available_models = hf_models
-            else:
-                gemini_models = gemini_image_client.get_models_for_user(access_level)
-                if gemini_models:
-                    model_key = list(gemini_models.keys())[0]
-                    is_hf_model = False
-                    available_models = gemini_models
-                else:
-                    model_key = "hf-flux-dev"  # Default fallback
-                    is_hf_model = True
-                    available_models = hf_replicate_client.get_models_for_user(access_level)
+            model_key = list(available_models.keys())[0]
 
         model_info = available_models.get(model_key, {})
         model_name = model_info.get("description", model_key)
@@ -2612,38 +3168,19 @@ async def handle_image_generation(chat_id: str, user_id: str, prompt: str, model
         
         logger.info(f"🔍 Отладка 3: промпт={enhanced_prompt[:80]}")
 
-        # Генерация через HF
         image_data = None
-        
-        # Логирование для отладки
-        logger.info(f"🔍 Отладка: model_key={model_key}, is_hf_model={is_hf_model}, hf_api_key={'✅' if hf_replicate_client.api_key else '❌'}")
+        provider_name = _get_image_provider_name(model_key)
+        logger.info(f"🎨 Генерация изображения через {provider_name}: model_key={model_key}")
 
-        if is_hf_model and hf_replicate_client.api_key:
-            # Генерация через HF (Stable Diffusion 3)
-            try:
+        try:
+            if model_key.startswith("polza-") and hf_replicate_client.api_key:
                 image_data = await hf_replicate_client.generate_image(
                     prompt=enhanced_prompt,
                     model_key=model_key,
                     timeout=90
                 )
-
-                if image_data and len(image_data) > 10000:
-                    logger.info(f"✅ HF успешно: {len(image_data)} байт")
-            except Exception as e:
-                logger.error(f"❌ Ошибка HF: {e}", exc_info=True)
-
-        # Gemini - в разработке
-        # if not image_data and gemini_image_client.api_key:
-        #     try:
-        #         image_data = await gemini_image_client.generate_image(
-        #             prompt=enhanced_prompt,
-        #             model_key=model_key if not is_hf_model else "gemini-flash",
-        #             timeout=90
-        #         )
-        #         if image_data and len(image_data) > 10000:
-        #             logger.info(f"✅ Gemini Image успешно: {len(image_data)} байт")
-        #     except Exception as e:
-        #         logger.error(f"❌ Ошибка Gemini Image: {e}", exc_info=True)
+        except Exception as e:
+            logger.error(f"❌ Ошибка генерации через {provider_name}: {e}", exc_info=True)
 
         # Если изображение получено - отправляем пользователю
         if image_data and len(image_data) > 10000:
@@ -2651,7 +3188,6 @@ async def handle_image_generation(chat_id: str, user_id: str, prompt: str, model
             with open(image_path, "wb") as f:
                 f.write(image_data)
 
-            provider_name = "Z-Image" if is_hf_model else "Gemini"
             await send_telegram_photo(
                 chat_id,
                 str(image_path),
@@ -2675,7 +3211,7 @@ async def handle_image_generation(chat_id: str, user_id: str, prompt: str, model
             "❌ Не удалось сгенерировать изображение.\n\n"
             "Возможные причины:\n"
             "• Polza.ai: временные неполадки API\n"
-            "• Gemini: недоступен в вашем регионе\n\n"
+            "• Модель временно недоступна\n\n"
             "Попробуйте:\n"
             "1. Позже\n"
             "2. Другую модель (/start → Генерация → Выбор модели)"
@@ -2734,6 +3270,25 @@ async def start_polling_for_bot(token: str, bot_name: str = "Bot"):
                     # Получаем базу данных для проверки тех.работ
                     from backend.database.users_db import get_database
                     db = get_database()
+
+                    # Алерт на попытки жать admin callback без прав
+                    if (callback_data.startswith("admin_") or callback_data.startswith("users_page_")) and not db.is_admin(callback_user_id):
+                        await notify_admins_about_security_event(
+                            db,
+                            offender_user_id=callback_user_id,
+                            chat_id=callback_chat_id,
+                            attempted_action=f"callback:{callback_data}",
+                        )
+                        from backend.api.telegram_core import answer_callback_query
+                        await answer_callback_query(callback_query["id"], "❌ У вас нет прав администратора")
+                        continue
+
+                    if not db.is_admin(callback_user_id):
+                        ban_info = db.get_user_ban(callback_user_id)
+                        if ban_info:
+                            from backend.api.telegram_core import answer_callback_query
+                            await answer_callback_query(callback_query["id"], "⛔ Вы заблокированы в боте")
+                            continue
                     
                     # Проверяем режим тех.работ для callback кнопок
                     maint_status = db.get_maintenance_mode()
@@ -2766,7 +3321,7 @@ async def start_polling_for_bot(token: str, bot_name: str = "Bot"):
 
                             # Редактируем сообщения
                             model_names = {
-                                "groq-llama": "🚀 Llama 3.3 70B - лучшая для русского",
+                                "groq-llama": "🧠 GPT-oss 20B - новая базовая модель",
                                 "groq-maverick": "🦙 Llama 4 Maverick - новейшая от Meta",
                                 "groq-scout": "🔍 Llama 4 Scout - легкая и быстрая",
                                 "groq-kimi": "🌙 Kimi K2 - от Moonshot AI",
@@ -2799,14 +3354,7 @@ async def start_polling_for_bot(token: str, bot_name: str = "Bot"):
                         db = get_database()
                         user_access_level = db.get_user_access_level(callback_user_id)
 
-                        # Определяем тип модели (Polza.ai или Gemini)
-                        is_hf_model = model_key.startswith("polza-")
-                        
-                        # Проверяем доступность модели для уровня доступа
-                        if is_hf_model:
-                            available_models = hf_replicate_client.get_models_for_user(user_access_level)
-                        else:
-                            available_models = gemini_image_client.get_models_for_user(user_access_level)
+                        available_models = _get_available_image_models(user_access_level)
 
                         if model_key not in available_models:
                             await answer_callback_query(
@@ -2820,7 +3368,7 @@ async def start_polling_for_bot(token: str, bot_name: str = "Bot"):
                         db.set_user_image_model(callback_user_id, model_key)
 
                         model_name = available_models[model_key]["description"]
-                        provider_name = "Polza.ai" if is_hf_model else "Gemini"
+                        provider_name = _get_image_provider_name(model_key)
 
                         await answer_callback_query(
                             callback_query["id"],
@@ -2841,7 +3389,6 @@ async def start_polling_for_bot(token: str, bot_name: str = "Bot"):
                     elif callback_data == "payment_made":
                         from backend.api.telegram_core import answer_callback_query, send_telegram_message
                         from backend.database.users_db import get_database
-                        from datetime import datetime, timedelta
 
                         # Проверяем лимит нажатий
                         now = datetime.now()
@@ -3151,8 +3698,6 @@ async def start_polling_for_bot(token: str, bot_name: str = "Bot"):
                                 await answer_callback_query(callback_query["id"], "❌ Ошибка при подтверждении оплаты")
 
                         elif action == "decline":
-                            from datetime import datetime, timedelta
-                            
                             # Увеличиваем счётчик отклонений
                             now = datetime.now()
                             if target_user_id not in user_declined_payments:
@@ -3243,43 +3788,7 @@ async def start_polling_for_bot(token: str, bot_name: str = "Bot"):
                         db = get_database()
 
                         users = db.get_all_users()
-                        level_icons = {"admin": "👑", "sub+": "🚀", "subscriber": "⭐", "user": "👤"}
-                        level_priority = {"admin": 0, "sub+": 1, "subscriber": 2, "user": 3}
-                        users_sorted = sorted(users, key=lambda u: level_priority.get(u.get('access_level', 'user'), 4))
-
-                        page_size = 20
-                        start_idx = page_num * page_size
-                        end_idx = min(start_idx + page_size, len(users_sorted))
-
-                        users_text = f"👥 Все пользователи (страница {page_num + 1}):\n\n"
-                        for u in users_sorted[start_idx:end_idx]:
-                            icon = level_icons.get(u.get('access_level', 'user'), '👤')
-                            first_name = u.get('first_name', '')
-                            username = u.get('username', '')
-                            uid = u.get('user_id', 'unknown')
-                            daily = u.get('daily_count', 0)
-
-                            name_parts = []
-                            if first_name:
-                                name_parts.append(first_name)
-                            if username:
-                                name_parts.append(f"@{username}")
-
-                            name = " ".join(name_parts) if name_parts else f"User {uid}"
-                            users_text += f"{icon} {name} ({uid}) - {daily} сегодня\n"
-
-                        total_pages = (len(users_sorted) + page_size - 1) // page_size
-                        users_text += f"\n📊 Всего: {len(users_sorted)} пользователей | Страница {page_num + 1} из {total_pages}"
-
-                        # Создаём кнопки навигации
-                        buttons = []
-                        nav_row = []
-                        if page_num > 0:
-                            nav_row.append({"text": "⬅️ Назад", "callback_data": f"users_page_{page_num - 1}"})
-                        if end_idx < len(users_sorted):
-                            nav_row.append({"text": "➡️ Далее", "callback_data": f"users_page_{page_num + 1}"})
-                        if nav_row:
-                            buttons.append(nav_row)
+                        users_text, buttons = _build_admin_users_page(users, page_num=page_num)
 
                         # Редактируем сообщения вместо отправки нового
                         await edit_message_text(
@@ -3288,6 +3797,408 @@ async def start_polling_for_bot(token: str, bot_name: str = "Bot"):
                             users_text,
                             parse_mode=None,  # Отключаем Markdown чтобы избежать ошибок с username
                             buttons=buttons
+                        )
+                        continue
+
+                    elif callback_data == "admin_users":
+                        from backend.api.telegram_core import answer_callback_query, edit_message_text
+                        from backend.database.users_db import get_database
+
+                        db = get_database()
+                        if not db.is_admin(callback_user_id):
+                            await answer_callback_query(callback_query["id"], "❌ Нет прав администратора")
+                            continue
+
+                        await answer_callback_query(callback_query["id"])
+                        users = db.get_all_users()
+                        users_text, buttons = _build_admin_users_page(users, page_num=0)
+                        await edit_message_text(
+                            callback_chat_id,
+                            callback_message_id,
+                            users_text,
+                            parse_mode=None,
+                            buttons=buttons
+                        )
+                        continue
+
+                    elif callback_data.startswith("admin_user:"):
+                        from backend.api.telegram_core import answer_callback_query, edit_message_text
+                        from backend.database.users_db import get_database
+
+                        db = get_database()
+                        if not db.is_admin(callback_user_id):
+                            await answer_callback_query(callback_query["id"], "❌ Нет прав администратора")
+                            continue
+
+                        _, target_user_id, page_str = callback_data.split(":", 2)
+                        page_num = int(page_str)
+                        text, buttons = _build_admin_user_card(db, target_user_id, page_num=page_num)
+
+                        await answer_callback_query(callback_query["id"])
+                        await edit_message_text(
+                            callback_chat_id,
+                            callback_message_id,
+                            text,
+                            parse_mode="Markdown",
+                            buttons=buttons
+                        )
+                        continue
+
+                    elif callback_data.startswith("admin_user_action:"):
+                        from backend.api.telegram_core import answer_callback_query, edit_message_text, send_telegram_message
+                        from backend.database.users_db import get_database
+
+                        db = get_database()
+                        if not db.is_admin(callback_user_id):
+                            await answer_callback_query(callback_query["id"], "❌ Нет прав администратора")
+                            continue
+
+                        _, action, target_user_id, page_str = callback_data.split(":", 3)
+                        page_num = int(page_str)
+
+                        if action == "subplus":
+                            old_level = db.get_user_access_level(target_user_id)
+                            if old_level == "sub+":
+                                await answer_callback_query(callback_query["id"], "ℹ️ У пользователя уже sub+")
+                                continue
+                            db.add_or_update_user(target_user_id)
+                            success = db.set_user_access_level(target_user_id, "sub+")
+                            if success:
+                                db.reset_daily_generation_count(target_user_id)
+                                db.log_admin_action(
+                                    admin_user_id=callback_user_id,
+                                    admin_username="",
+                                    action_type="set_level",
+                                    target_user_id=target_user_id,
+                                    old_value=old_level,
+                                    new_value="sub+",
+                                    details={"inline_admin_user_card": True, "daily_count_reset": True},
+                                    success=True
+                                )
+                                await answer_callback_query(callback_query["id"], "✅ Выдан sub+")
+                                try:
+                                    await send_telegram_message(
+                                        target_user_id,
+                                        "✅ **Ваш уровень повышен до sub+!**\n\n"
+                                        "🎁 Теперь вам доступно **30 генераций изображений в день**.\n\n"
+                                        "Дневной счётчик сброшен.\n\n"
+                                        "Спасибо за использование LiraAI!",
+                                        parse_mode="Markdown"
+                                    )
+                                except Exception as e:
+                                    logger.warning(f"⚠️ Не удалось отправить уведомление пользователю {target_user_id}: {e}")
+                            else:
+                                await answer_callback_query(callback_query["id"], "❌ Не удалось выдать sub+")
+                                continue
+
+                        elif action == "subscriber":
+                            old_level = db.get_user_access_level(target_user_id)
+                            if old_level == "subscriber":
+                                await answer_callback_query(callback_query["id"], "ℹ️ У пользователя уже subscriber")
+                                continue
+                            db.add_or_update_user(target_user_id)
+                            success = db.set_user_access_level(target_user_id, "subscriber")
+                            if success:
+                                db.log_admin_action(
+                                    admin_user_id=callback_user_id,
+                                    admin_username="",
+                                    action_type="set_level",
+                                    target_user_id=target_user_id,
+                                    old_value=old_level,
+                                    new_value="subscriber",
+                                    details={"inline_admin_user_card": True},
+                                    success=True
+                                )
+                                await answer_callback_query(callback_query["id"], "✅ Выдан subscriber")
+                                try:
+                                    await send_telegram_message(
+                                        target_user_id,
+                                        "⭐ **Ваш уровень повышен до subscriber!**\n\n"
+                                        "Теперь вам доступно **5 генераций изображений в день**.\n\n"
+                                        "Спасибо за использование LiraAI!",
+                                        parse_mode="Markdown"
+                                    )
+                                except Exception as e:
+                                    logger.warning(f"⚠️ Не удалось отправить уведомление пользователю {target_user_id}: {e}")
+                            else:
+                                await answer_callback_query(callback_query["id"], "❌ Не удалось выдать subscriber")
+                                continue
+
+                        elif action == "user":
+                            old_level = db.get_user_access_level(target_user_id)
+                            if old_level == "user":
+                                await answer_callback_query(callback_query["id"], "ℹ️ У пользователя уже уровень user")
+                                continue
+                            db.add_or_update_user(target_user_id)
+                            success = db.set_user_access_level(target_user_id, "user")
+                            if success:
+                                db.log_admin_action(
+                                    admin_user_id=callback_user_id,
+                                    admin_username="",
+                                    action_type="remove_level",
+                                    target_user_id=target_user_id,
+                                    old_value=old_level,
+                                    new_value="user",
+                                    details={"inline_admin_user_card": True},
+                                    success=True
+                                )
+                                await answer_callback_query(callback_query["id"], "✅ Уровень изменён на user")
+                                try:
+                                    await send_telegram_message(
+                                        target_user_id,
+                                        f"👤 **Ваш уровень доступа изменён.**\n\n"
+                                        f"Было: {old_level}\n"
+                                        f"Стало: user\n\n"
+                                        f"Теперь у вас **3 генерации изображений в день**.\n\n"
+                                        f"Спасибо за использование LiraAI!",
+                                        parse_mode="Markdown"
+                                    )
+                                except Exception as e:
+                                    logger.warning(f"⚠️ Не удалось отправить уведомление пользователю {target_user_id}: {e}")
+                            else:
+                                await answer_callback_query(callback_query["id"], "❌ Не удалось изменить уровень")
+                                continue
+
+                        elif action == "reset":
+                            success = db.reset_daily_generation_count(target_user_id)
+                            if success:
+                                db.log_admin_action(
+                                    admin_user_id=callback_user_id,
+                                    admin_username="",
+                                    action_type="reset_daily_limit",
+                                    target_user_id=target_user_id,
+                                    details={"inline_admin_user_card": True},
+                                    success=True
+                                )
+                                await answer_callback_query(callback_query["id"], "✅ Дневной лимит сброшен")
+                                try:
+                                    await send_telegram_message(
+                                        target_user_id,
+                                        "🔄 **Ваш дневной лимит генераций сброшен администратором.**\n\n"
+                                        "Можете снова использовать генерацию изображений.",
+                                        parse_mode="Markdown"
+                                    )
+                                except Exception as e:
+                                    logger.warning(f"⚠️ Не удалось отправить уведомление пользователю {target_user_id}: {e}")
+                            else:
+                                await answer_callback_query(callback_query["id"], "❌ Не удалось сбросить лимит")
+                                continue
+
+                        elif action == "history":
+                            history = db.get_admin_dialog_history(target_user_id, limit=10)
+                            stats = db.get_user_dialog_stats(target_user_id) or {}
+                            if not history:
+                                text = f"📚 *История пользователя*\n\n`{target_user_id}`\n\nИстория не найдена."
+                            else:
+                                lines = [
+                                    "📚 *История пользователя*\n",
+                                    f"`{target_user_id}`",
+                                    f"Всего сообщений: *{stats.get('total_messages', 0)}*\n",
+                                ]
+                                for msg in history[-10:]:
+                                    role_icon = "👤" if msg.get("role") == "user" else "🤖"
+                                    created = (msg.get("created_at") or "")[:16]
+                                    content = _escape_markdown(msg.get("content") or "")
+                                    if len(content) > 90:
+                                        content = content[:90] + "..."
+                                    lines.append(f"{role_icon} `{created}` {content}")
+                                text = "\n".join(lines)
+
+                            buttons = [
+                                [{"text": "⬅️ Назад к карточке", "callback_data": f"admin_user:{target_user_id}:{page_num}"}],
+                                [{"text": "⬅️ К админке", "callback_data": "admin_home"}]
+                            ]
+                            await answer_callback_query(callback_query["id"])
+                            await edit_message_text(
+                                callback_chat_id,
+                                callback_message_id,
+                                text,
+                                parse_mode="Markdown",
+                                buttons=buttons
+                            )
+                            continue
+
+                        elif action == "ban_prompt":
+                            pending_ban_input[callback_user_id] = {
+                                "target_user_id": target_user_id,
+                                "page_num": page_num,
+                            }
+                            await answer_callback_query(callback_query["id"], "📝 Введите срок бана в чат")
+                            await send_telegram_message(
+                                callback_chat_id,
+                                f"🔨 Введите срок бана для пользователя `{target_user_id}`.\n\n"
+                                f"Примеры:\n"
+                                f"`7` - бан на 7 дней\n"
+                                f"`30` - бан на 30 дней\n"
+                                f"`permanent` - навсегда\n\n"
+                                f"/cancel - отмена",
+                                parse_mode="Markdown"
+                            )
+                            continue
+
+                        elif action == "message":
+                            pending_admin_messages[callback_user_id] = {
+                                "target_user_id": target_user_id,
+                                "page_num": page_num,
+                                "created_at": datetime.now(),
+                            }
+                            await answer_callback_query(callback_query["id"], "✉️ Введите сообщение в чат")
+                            await send_telegram_message(
+                                callback_chat_id,
+                                f"✉️ Введите сообщение для пользователя `{target_user_id}`.\n\n"
+                                f"Следующее обычное текстовое сообщение будет отправлено ему.\n"
+                                f"/cancel - отмена",
+                                parse_mode="Markdown"
+                            )
+                            continue
+
+                        elif action == "unban":
+                            success = db.remove_user_ban(target_user_id)
+                            if success:
+                                db.log_admin_action(
+                                    admin_user_id=callback_user_id,
+                                    admin_username="",
+                                    action_type="unban_user",
+                                    target_user_id=target_user_id,
+                                    details={"inline_admin_user_card": True},
+                                    success=True
+                                )
+                                await answer_callback_query(callback_query["id"], "✅ Пользователь разбанен")
+                                try:
+                                    await send_telegram_message(
+                                        target_user_id,
+                                        "✅ **Блокировка в боте снята.**",
+                                        parse_mode="Markdown"
+                                    )
+                                except Exception as e:
+                                    logger.warning(f"⚠️ Не удалось отправить уведомление о разбане {target_user_id}: {e}")
+                            else:
+                                await answer_callback_query(callback_query["id"], "❌ Не удалось снять бан")
+                                continue
+
+                        text, buttons = _build_admin_user_card(db, target_user_id, page_num=page_num)
+                        await edit_message_text(
+                            callback_chat_id,
+                            callback_message_id,
+                            text,
+                            parse_mode="Markdown",
+                            buttons=buttons
+                        )
+                        continue
+
+                    elif callback_data == "admin_stats_panel":
+                        from backend.api.telegram_core import answer_callback_query, edit_message_text
+                        from backend.database.users_db import get_database
+
+                        db = get_database()
+                        if not db.is_admin(callback_user_id):
+                            await answer_callback_query(callback_query["id"], "❌ Нет прав администратора")
+                            continue
+
+                        total_users = db.get_all_users_count()
+                        users = db.get_all_users()
+                        admin_count = sum(1 for u in users if u.get("access_level") == "admin")
+                        sub_plus_count = sum(1 for u in users if u.get("access_level") == "sub+")
+                        subscriber_count = sum(1 for u in users if u.get("access_level") == "subscriber")
+                        user_count = sum(1 for u in users if u.get("access_level") == "user")
+                        total_gens = sum(int(u.get("total_count", 0) or 0) for u in users)
+                        today_gens = sum(int(u.get("today_generations", u.get("daily_count", 0)) or 0) for u in users)
+                        active_today = sum(1 for u in users if int(u.get("today_generations", u.get("daily_count", 0)) or 0) > 0)
+
+                        text = (
+                            "📊 *Статистика бота*\n\n"
+                            f"👥 Пользователей: *{total_users}*\n"
+                            f"👑 Админов: *{admin_count}*\n"
+                            f"🚀 sub+: *{sub_plus_count}*\n"
+                            f"⭐ Подписчиков: *{subscriber_count}*\n"
+                            f"👤 Обычных: *{user_count}*\n\n"
+                            f"🎨 Генераций сегодня: *{today_gens}*\n"
+                            f"🎨 Генераций всего: *{total_gens}*\n"
+                            f"🔥 Активных сегодня: *{active_today}*"
+                        )
+                        buttons = [[{"text": "⬅️ К админке", "callback_data": "admin_home"}]]
+
+                        await answer_callback_query(callback_query["id"])
+                        await edit_message_text(
+                            callback_chat_id,
+                            callback_message_id,
+                            text,
+                            parse_mode="Markdown",
+                            buttons=buttons
+                        )
+                        continue
+
+                    elif callback_data == "admin_logs":
+                        from backend.api.telegram_core import answer_callback_query, edit_message_text
+                        from backend.database.users_db import get_database
+
+                        db = get_database()
+                        if not db.is_admin(callback_user_id):
+                            await answer_callback_query(callback_query["id"], "❌ Нет прав администратора")
+                            continue
+
+                        logs = db.get_admin_audit_log(admin_user_id=callback_user_id, limit=10)
+                        if not logs:
+                            text = "📋 *Audit Log*\n\nЗаписей пока нет."
+                        else:
+                            lines = ["📋 *Audit Log*\n"]
+                            for log in logs[:10]:
+                                action_type = log.get("action_type", "unknown")
+                                target = log.get("target_user_id", "N/A")
+                                created = (log.get("created_at") or "")[:16]
+                                status_icon = "✅" if log.get("success", True) else "❌"
+                                lines.append(f"{status_icon} `{action_type}` → `{target}`")
+                                lines.append(f"`{created}`")
+                                lines.append("")
+                            text = "\n".join(lines).strip()
+
+                        buttons = [[{"text": "⬅️ К админке", "callback_data": "admin_home"}]]
+                        await answer_callback_query(callback_query["id"])
+                        await edit_message_text(
+                            callback_chat_id,
+                            callback_message_id,
+                            text,
+                            parse_mode="Markdown",
+                            buttons=buttons
+                        )
+                        continue
+
+                    elif callback_data == "admin_help":
+                        from backend.api.telegram_core import answer_callback_query, edit_message_text
+                        from backend.database.users_db import get_database
+
+                        db = get_database()
+                        if not db.is_admin(callback_user_id):
+                            await answer_callback_query(callback_query["id"], "❌ Нет прав администратора")
+                            continue
+
+                        await answer_callback_query(callback_query["id"])
+                        await edit_message_text(
+                            callback_chat_id,
+                            callback_message_id,
+                            _build_admin_help_text(),
+                            parse_mode="Markdown",
+                            buttons=[[{"text": "⬅️ К админке", "callback_data": "admin_home"}]]
+                        )
+                        continue
+
+                    elif callback_data == "admin_home":
+                        from backend.api.telegram_core import answer_callback_query, edit_message_text
+                        from backend.database.users_db import get_database
+
+                        db = get_database()
+                        if not db.is_admin(callback_user_id):
+                            await answer_callback_query(callback_query["id"], "❌ Нет прав администратора")
+                            continue
+
+                        admin_text, admin_buttons = _build_admin_panel()
+                        await answer_callback_query(callback_query["id"])
+                        await edit_message_text(
+                            callback_chat_id,
+                            callback_message_id,
+                            admin_text,
+                            parse_mode="Markdown",
+                            buttons=admin_buttons
                         )
                         continue
 
@@ -3303,7 +4214,7 @@ async def start_polling_for_bot(token: str, bot_name: str = "Bot"):
                             keyboard = create_model_selection_keyboard()
                             await send_telegram_message(
                                 callback_chat_id,
-                                "🤖 **Выбор модели**\n\nВыберите модель для общения��:",
+                                "🤖 **Выбор модели**\n\nВыберите модель на клавиатуре ниже.",
                                 reply_markup=keyboard,
                                 parse_mode="Markdown"
                             )
@@ -3413,4 +4324,3 @@ async def start_telegram_polling():
 
     # Запускаем polling
     await start_polling_for_bot(token, "Bot")
-
