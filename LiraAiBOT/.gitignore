@@ -36,6 +36,9 @@ ENV/
 .env.local
 .env.*
 !.env.example
+.env.backup
+.env.bak
+.env.bothost
 
 # Logs
 logs/
@@ -59,3 +62,6 @@ Check_Correction_Complete_Guide.*
 .DS_Store
 Thumbs.db
 
+# Local test artifacts
+*.pid
+*.out

@@ -92,6 +92,7 @@ import uvicorn
 
 # Импорты API
 from api import routes
+from backend.web.routes import router as web_router
 
 # Настройка логирования
 os.makedirs('logs', exist_ok=True)
@@ -131,11 +132,16 @@ app.add_middleware(
 
 # Подключение маршрутов
 app.include_router(routes.router, prefix="/api")
+app.include_router(web_router)
 
 # Статические файлы
 frontend_path = Path(__file__).parent.parent / "frontend" / "public"
 if frontend_path.exists():
     app.mount("/", StaticFiles(directory=str(frontend_path), html=True), name="static")
+
+web_static_path = Path(__file__).parent / "web" / "static"
+if web_static_path.exists():
+    app.mount("/web-static", StaticFiles(directory=str(web_static_path)), name="web-static")
 
 @app.on_event("startup")
 async def startup_event():
@@ -207,10 +213,9 @@ if __name__ == "__main__":
     # Запуск сервера
     from backend.config import API_CONFIG
     uvicorn.run(
-        "main:app",
+        app,
         host=API_CONFIG["host"],
         port=API_CONFIG["port"],
         reload=False,
         log_level="info"
     )
-

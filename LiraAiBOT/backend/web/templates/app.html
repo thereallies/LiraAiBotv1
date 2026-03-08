@@ -1,0 +1,296 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>LiraAI Workspace</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;700;800&family=Space+Grotesk:wght@500;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/web-static/styles.css?v=web-20260308-17">
+</head>
+<body class="app-body">
+  <div id="app" class="app-shell" data-is-admin="{{ 'true' if is_admin else 'false' }}">
+    <aside class="sidebar">
+      <div class="sidebar-top">
+        <div class="brand-block">
+          <div class="brand-mark">L</div>
+          <div>
+            <div class="brand-title">LiraAI</div>
+            <div class="brand-subtitle">Compact workspace</div>
+          </div>
+        </div>
+
+        <nav class="nav-list">
+          <button class="nav-item active" type="button" data-view="chat"><span>AI-чат</span><small>Основной сценарий</small></button>
+          <button class="nav-item" type="button" data-view="image"><span>Картинки</span><small>Polza Z-Image</small></button>
+          <button class="nav-item" type="button" data-view="vision"><span>Фото</span><small>Разбор изображения</small></button>
+          <button class="nav-item" type="button" data-view="voice"><span>Голос</span><small>Распознавание audio</small></button>
+          <button class="nav-item" type="button" data-view="dashboard"><span>Обзор</span><small>Активность и лимиты</small></button>
+          {% if is_admin %}
+          <button class="nav-item admin-only" type="button" data-view="admin"><span>Управление</span><small>Пользователи и аналитика</small></button>
+          {% endif %}
+        </nav>
+      </div>
+
+      <div class="sidebar-footer">
+        <div class="profile-card">
+          <div class="profile-label">Профиль</div>
+          <strong>{{ profile.first_name or profile.username or profile.user_id }}</strong>
+          <div class="profile-level">@{{ profile.username or profile.user_id }} · {{ profile.access_level }}</div>
+        </div>
+        <button id="logout-btn" class="ghost-btn">Выйти</button>
+      </div>
+    </aside>
+
+    <main class="workspace">
+      <header class="workspace-header">
+        <div class="mobile-brand">
+          <button id="sidebar-toggle" class="mobile-menu-btn" type="button">Меню</button>
+          <div>
+            <div class="topbar-caption">LiraAI Workspace</div>
+            <h1 id="view-title">AI-чат</h1>
+          </div>
+        </div>
+        <div class="workspace-meta">
+          <span class="status-pill">Telegram connected</span>
+          <span class="status-pill muted">@{{ profile.username or bot_username }}</span>
+        </div>
+      </header>
+
+      <div class="mobile-nav">
+        <button class="mobile-tab active" type="button" data-view="chat">Чат</button>
+        <button class="mobile-tab" type="button" data-view="image">Картинки</button>
+        <button class="mobile-tab" type="button" data-view="vision">Фото</button>
+        <button class="mobile-tab" type="button" data-view="voice">Голос</button>
+        <button class="mobile-tab" type="button" data-view="dashboard">Обзор</button>
+        {% if is_admin %}
+        <button class="mobile-tab" type="button" data-view="admin">Admin</button>
+        {% endif %}
+      </div>
+
+      <section id="view-dashboard" class="view-panel">
+        <div class="metric-ribbon">
+          <article class="metric-card soft">
+            <span>Сегодня генераций</span>
+            <strong id="metric-today">0</strong>
+          </article>
+          <article class="metric-card soft">
+            <span>Всего генераций</span>
+            <strong id="metric-total">0</strong>
+          </article>
+          <article class="metric-card soft">
+            <span>Сообщений сегодня</span>
+            <strong id="metric-messages">0</strong>
+          </article>
+          <article class="metric-card soft">
+            <span>Дневной лимит</span>
+            <strong id="metric-limit">0</strong>
+          </article>
+        </div>
+
+        <div class="overview-grid">
+          <section class="panel-card feature-panel">
+            <div class="panel-head compact">
+              <h2>Быстрые сценарии</h2>
+              <span>Переход к основным инструментам</span>
+            </div>
+            <div class="quick-actions">
+              <button class="quick-card" type="button" data-view-jump="chat">
+                <strong>AI-чат</strong>
+                <small>Быстрый вход в основной рабочий сценарий</small>
+              </button>
+              <button class="quick-card" type="button" data-view-jump="image">
+                <strong>Создать изображение</strong>
+                <small>Генерация через Polza Z-Image</small>
+              </button>
+              <button class="quick-card" type="button" data-view-jump="vision">
+                <strong>Разобрать фото</strong>
+                <small>Описание, сцена и содержимое изображения</small>
+              </button>
+              <button class="quick-card" type="button" data-view-jump="voice">
+                <strong>Распознать голос</strong>
+                <small>Перевести voice или audio в текст</small>
+              </button>
+            </div>
+          </section>
+
+          <section class="panel-card">
+            <div class="panel-head compact">
+              <h2>Последние сообщения</h2>
+              <span>Краткая история диалога</span>
+            </div>
+            <div id="recent-messages" class="stack-list"></div>
+          </section>
+        </div>
+      </section>
+
+      <section id="view-chat" class="view-panel active">
+        <div id="chat-layout" class="chat-layout">
+          <section id="chat-main-panel" class="chat-main-panel">
+            <div class="chat-toolbar">
+              <button id="new-chat-btn" class="soft-btn" type="button">＋ New chat</button>
+              <button id="history-toggle-btn" class="soft-btn history-toggle-btn" type="button">История</button>
+              <select id="chat-model" class="input-select">
+                {% for key, model in models.items() %}
+                <option value="{{ key }}">{{ model.label }}</option>
+                {% endfor %}
+              </select>
+              <select id="assistant-mode" class="input-select mode-select">
+                <option value="assistant">LiraAI Assistant</option>
+                <option value="lira-4d">Лира 4D Prompt Lab</option>
+              </select>
+            </div>
+            <div id="chat-status" class="chat-status hidden"></div>
+
+            <div id="chat-canvas" class="chat-canvas">
+              <div id="chat-feed" class="chat-feed"></div>
+              <form id="chat-form" class="composer chat-composer">
+                <textarea id="chat-input" placeholder="Напиши вопрос, задачу, промпт или черновик текста..."></textarea>
+                <button id="chat-submit-btn" type="submit" class="primary-btn">Отправить</button>
+              </form>
+            </div>
+          </section>
+
+          <aside id="chat-history-panel" class="chat-history-panel">
+            <div class="chat-history-head">
+              <strong>Чаты</strong>
+              <span>Быстрый возврат к нужному диалогу</span>
+            </div>
+            <div id="chat-sessions" class="chat-sessions"></div>
+          </aside>
+        </div>
+      </section>
+
+      <section id="view-image" class="view-panel">
+        <div class="tool-layout">
+          <section class="panel-card tool-panel">
+            <div class="panel-head compact">
+              <h2>Генерация изображений</h2>
+              <span>Один экран для промпта и результата</span>
+            </div>
+            <form id="image-form" class="stack-form">
+              <textarea id="image-prompt" placeholder="Например: футуристичный кот в неоновом Токио, cinematic lighting, 16:9"></textarea>
+              <button type="submit" class="primary-btn">Сгенерировать</button>
+            </form>
+          </section>
+          <section class="panel-card result-panel">
+            <div class="panel-head compact">
+              <h2>Результат</h2>
+              <span>Изображение появится здесь</span>
+            </div>
+            <div id="image-result" class="image-result empty">Здесь появится результат генерации</div>
+          </section>
+        </div>
+      </section>
+
+      <section id="view-vision" class="view-panel">
+        <div class="tool-layout">
+          <section class="panel-card tool-panel">
+            <div class="panel-head compact">
+              <h2>Анализ фото</h2>
+              <span>Загрузи изображение и получи описание</span>
+            </div>
+            <form id="vision-form" class="upload-form">
+              <label class="upload-box">
+                <input id="vision-file" type="file" accept="image/*">
+                <span>Выбрать изображение</span>
+                <small>PNG, JPG, JPEG</small>
+              </label>
+              <button type="submit" class="primary-btn">Проанализировать</button>
+            </form>
+          </section>
+          <section class="panel-card result-panel">
+            <div class="panel-head compact">
+              <h2>Описание</h2>
+              <span>Ответ vision-модели</span>
+            </div>
+            <div id="vision-result" class="text-result empty">Описание изображения появится здесь</div>
+          </section>
+        </div>
+      </section>
+
+      <section id="view-voice" class="view-panel">
+        <div class="tool-layout">
+          <section class="panel-card tool-panel">
+            <div class="panel-head compact">
+              <h2>Голос</h2>
+              <span>Распознать voice или обычный audio-файл</span>
+            </div>
+            <form id="voice-form" class="upload-form">
+              <label class="upload-box">
+                <input id="voice-file" type="file" accept=".ogg,.mp3,.wav,audio/*">
+                <span>Выбрать аудиофайл</span>
+                <small>OGG, MP3, WAV</small>
+              </label>
+              <button type="submit" class="primary-btn">Распознать</button>
+            </form>
+          </section>
+          <section class="panel-card result-panel">
+            <div class="panel-head compact">
+              <h2>Текст</h2>
+              <span>Распознанный результат</span>
+            </div>
+            <div id="voice-result" class="text-result empty">Распознанный текст появится здесь</div>
+          </section>
+        </div>
+      </section>
+
+      {% if is_admin %}
+      <section id="view-admin" class="view-panel">
+        <div class="metric-ribbon">
+          <article class="metric-card soft"><span>Пользователей</span><strong id="admin-total-users">0</strong></article>
+          <article class="metric-card soft"><span>Активных сегодня</span><strong id="admin-active-users">0</strong></article>
+          <article class="metric-card soft"><span>Банов</span><strong id="admin-banned-users">0</strong></article>
+          <article class="metric-card soft"><span>Ожидают оплаты</span><strong id="admin-pending-payments">0</strong></article>
+        </div>
+
+        <div class="admin-grid-top">
+          <section class="panel-card">
+            <div class="panel-head compact">
+              <h2>Активность пользователей</h2>
+              <span>7 последних дней</span>
+            </div>
+            <div id="activity-chart" class="chart-box"></div>
+          </section>
+          <section class="panel-card">
+            <div class="panel-head compact">
+              <h2>Генерации</h2>
+              <span>Использование image generation</span>
+            </div>
+            <div id="generation-chart" class="chart-box"></div>
+          </section>
+        </div>
+
+        <div class="admin-grid-bottom">
+          <section class="panel-card">
+            <div class="panel-head compact">
+              <h2>Пользователи</h2>
+              <span>Уровни, лимиты, быстрые действия</span>
+            </div>
+            <div id="admin-users" class="admin-users"></div>
+          </section>
+          <section class="panel-card">
+            <div class="panel-head compact">
+              <h2>Audit log</h2>
+              <span>Последние админские действия</span>
+            </div>
+            <div id="audit-log" class="stack-list audit-list"></div>
+          </section>
+        </div>
+      </section>
+      {% endif %}
+    </main>
+  </div>
+  <div id="toast-stack" class="toast-stack" aria-live="polite" aria-atomic="true"></div>
+
+  <script>
+    window.LIRA_WEB_BOOT = {
+      isAdmin: {{ 'true' if is_admin else 'false' }},
+      profile: {{ profile|tojson }},
+      models: {{ models|tojson }}
+    };
+  </script>
+  <script src="/web-static/app.js?v=web-20260308-17"></script>
+</body>
+</html>

@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>LiraAI Web</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;700;800&family=Space+Grotesk:wght@500;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/web-static/styles.css?v=web-20260308-11">
+</head>
+<body class="landing-body">
+  <main class="landing-shell">
+    <section class="hero-panel">
+      <div class="hero-topline">
+        <div>
+          <div class="hero-badge">LiraAI Web</div>
+          <h1>LiraAI в браузере: чат, фото, голос и генерация</h1>
+          <p class="hero-copy">
+            Веб-версия LiraAI без телеграм-хаоса: нормальный чат, история диалогов, работа с фото,
+            голосом и генерацией в одном спокойном интерфейсе.
+          </p>
+          <div class="hero-strip">
+            <span>Groq + Cerebras</span>
+            <span>Polza Z-Image</span>
+            <span>Vision + Voice</span>
+          </div>
+          <div class="hero-notes">
+            <div class="hero-note"><strong>История чатов</strong><span>Быстрый возврат к нужному диалогу</span></div>
+            <div class="hero-note"><strong>Один вход</strong><span>Тот же Telegram-аккаунт без лишней регистрации</span></div>
+            <div class="hero-note"><strong>Мультимодальность</strong><span>Текст, фото, голос и генерация в одной рабочей зоне</span></div>
+          </div>
+        </div>
+
+        <div class="hero-visual">
+          {% if hero_image_url %}
+          <div class="hero-visual-frame hero-visual-photo" style="background-image: url('{{ hero_image_url }}');"></div>
+          {% else %}
+          <div class="hero-visual-frame hero-visual-fallback">
+            <div class="hero-orb hero-orb-a"></div>
+            <div class="hero-orb hero-orb-b"></div>
+            <div class="hero-orb hero-orb-c"></div>
+            <div class="hero-fallback-copy">
+              <strong>LiraAI</strong>
+              <span>Multimodal assistant</span>
+            </div>
+          </div>
+          {% endif %}
+        </div>
+      </div>
+    </section>
+
+    <aside class="auth-panel">
+      <div class="auth-topline">Авторизация через Telegram</div>
+      <h2>Войти в LiraAI Web</h2>
+      <p class="auth-copy">
+        Используй уже существующий Telegram-аккаунт. После входа сразу откроется твоя рабочая зона LiraAI.
+      </p>
+
+      <div class="auth-checklist">
+        <div class="auth-check">Тот же аккаунт, без отдельной регистрации</div>
+        <div class="auth-check">Сразу открывается основной рабочий сценарий</div>
+      </div>
+
+      <div id="auth-status" class="auth-status">Ожидаю авторизацию через Telegram</div>
+
+      <div class="login-widget-wrap">
+        {% if show_telegram_widget and bot_username %}
+        <script async src="https://telegram.org/js/telegram-widget.js?22"
+          data-telegram-login="{{ bot_username }}"
+          data-size="large"
+          data-radius="14"
+          data-request-access="write"
+          data-userpic="false"
+          data-onauth="window.onTelegramAuth(user)">
+        </script>
+        {% elif not show_telegram_widget %}
+        <div class="auth-warning compact">
+          Для localhost Telegram Login Widget скрыт. Это нормальный локальный режим.
+        </div>
+        {% else %}
+        <div class="auth-warning">
+          Не удалось определить username бота для Telegram Login Widget.
+        </div>
+        {% endif %}
+      </div>
+
+      {% if is_dev_mode %}
+      <div class="dev-login-box">
+        <div class="dev-login-title">Локальная разработка</div>
+        <p>Для локальной проверки можно войти как существующий пользователь по ID и сразу открыть нужный workspace.</p>
+        <div class="dev-login-row">
+          <input id="dev-user-id" type="text" value="{{ default_dev_user_id }}" placeholder="User ID">
+          <button id="dev-login-btn" class="primary-btn" type="button">Войти локально</button>
+        </div>
+      </div>
+      {% endif %}
+
+      <div class="auth-footnote">
+        После входа откроется личный workspace LiraAI с теми же доступами, что и в боте.
+      </div>
+    </aside>
+  </main>
+
+  <script>
+    window.onTelegramAuth = async function(user) {
+      const statusEl = document.getElementById('auth-status');
+      statusEl.textContent = 'Проверяю Telegram-подпись и создаю сессию...';
+      try {
+        const response = await fetch('/api/web/auth/telegram', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify(user)
+        });
+        const data = await response.json();
+        if (!response.ok || !data.ok) {
+          throw new Error(data.detail || 'Авторизация не удалась');
+        }
+        statusEl.textContent = 'Успешно. Перехожу в рабочую зону...';
+        window.location.href = data.redirect || '/web/app';
+      } catch (error) {
+        statusEl.textContent = 'Ошибка авторизации: ' + error.message;
+      }
+    };
+
+    const devBtn = document.getElementById('dev-login-btn');
+    if (devBtn) {
+      devBtn.addEventListener('click', async () => {
+        const statusEl = document.getElementById('auth-status');
+        const userId = document.getElementById('dev-user-id').value.trim();
+        statusEl.textContent = 'Создаю локальную dev-сессию...';
+        try {
+          const response = await fetch('/api/web/auth/dev-login', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ user_id: userId || null })
+          });
+          const data = await response.json();
+          if (!response.ok || !data.ok) {
+            throw new Error(data.detail || 'Dev login не удался');
+          }
+          window.location.href = data.redirect || '/web/app';
+        } catch (error) {
+          statusEl.textContent = 'Ошибка dev login: ' + error.message;
+        }
+      });
+    }
+  </script>
+</body>
+</html>

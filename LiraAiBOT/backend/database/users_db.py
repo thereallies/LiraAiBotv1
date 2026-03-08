@@ -753,6 +753,114 @@ class BotDatabase:
 
         return ban_data
 
+    def set_bot_setting(self, key: str, value: Any) -> bool:
+        """Сохраняет произвольную настройку в bot_settings."""
+        serialized = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
+
+        if USE_SUPABASE and supabase:
+            try:
+                supabase.table("bot_settings").upsert({
+                    "key": key,
+                    "value": serialized
+                }).execute()
+                return True
+            except Exception as e:
+                logger.error(f"❌ Ошибка Supabase в set_bot_setting({key}): {e}")
+                return False
+
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        try:
+            cursor.execute("INSERT OR REPLACE INTO bot_settings (key, value) VALUES (?, ?)", (key, serialized))
+            conn.commit()
+            return True
+        except Exception as e:
+            logger.error(f"❌ Ошибка SQLite в set_bot_setting({key}): {e}")
+            conn.rollback()
+            return False
+        finally:
+            conn.close()
+
+    def get_bot_setting(self, key: str, default: Any = None, parse_json: bool = False) -> Any:
+        """Получает произвольную настройку из bot_settings."""
+        raw_value = None
+
+        if USE_SUPABASE and supabase:
+            try:
+                result = supabase.table("bot_settings").select("value").eq("key", key).execute()
+                if result.data:
+                    raw_value = result.data[0].get("value")
+            except Exception as e:
+                logger.error(f"❌ Ошибка Supabase в get_bot_setting({key}): {e}")
+                return default
+        else:
+            conn = self._get_connection()
+            cursor = conn.cursor()
+            try:
+                cursor.execute("SELECT value FROM bot_settings WHERE key = ?", (key,))
+                row = cursor.fetchone()
+                raw_value = row["value"] if row else None
+            except Exception as e:
+                logger.error(f"❌ Ошибка SQLite в get_bot_setting({key}): {e}")
+                return default
+            finally:
+                conn.close()
+
+        if raw_value is None:
+            return default
+
+        if not parse_json:
+            return raw_value
+
+        try:
+            return json.loads(raw_value)
+        except Exception:
+            return default
+
+    def delete_bot_setting(self, key: str) -> bool:
+        """Удаляет произвольную настройку из bot_settings."""
+        if USE_SUPABASE and supabase:
+            try:
+                supabase.table("bot_settings").delete().eq("key", key).execute()
+                return True
+            except Exception as e:
+                logger.error(f"❌ Ошибка Supabase в delete_bot_setting({key}): {e}")
+                return False
+
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        try:
+            cursor.execute("DELETE FROM bot_settings WHERE key = ?", (key,))
+            conn.commit()
+            return True
+        except Exception as e:
+            logger.error(f"❌ Ошибка SQLite в delete_bot_setting({key}): {e}")
+            conn.rollback()
+            return False
+        finally:
+            conn.close()
+
+    def list_bot_settings_by_prefix(self, prefix: str) -> List[Dict[str, Any]]:
+        """Возвращает список настроек bot_settings по префиксу ключа."""
+        if USE_SUPABASE and supabase:
+            try:
+                result = supabase.table("bot_settings").select("key,value").like("key", f"{prefix}%").execute()
+                return result.data or []
+            except Exception as e:
+                logger.error(f"❌ Ошибка Supabase в list_bot_settings_by_prefix({prefix}): {e}")
+                return []
+
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        try:
+            cursor.execute("SELECT key, value FROM bot_settings WHERE key LIKE ?", (f"{prefix}%",))
+            return [dict(row) for row in cursor.fetchall()]
+        except Exception as e:
+            logger.error(f"❌ Ошибка SQLite в list_bot_settings_by_prefix({prefix}): {e}")
+            return []
+        finally:
+            conn.close()
+
     def get_all_users_for_notification(self) -> List[str]:
         """Получает список всех user_id для рассылки уведомлений (с кэшем)"""
         if USE_SUPABASE and supabase:
@@ -1104,13 +1212,41 @@ class BotDatabase:
                     if history_user_id:
                         today_counts[history_user_id] = today_counts.get(history_user_id, 0) + 1
 
+                banned_user_ids = set()
+                try:
+                    bans_result = supabase.table("bot_settings").select("key,value").like("key", "user_ban:%").execute()
+                    for row in (bans_result.data or []):
+                        key = row.get("key") or ""
+                        if not key.startswith("user_ban:"):
+                            continue
+
+                        banned_user_id = key.split("user_ban:", 1)[1]
+                        try:
+                            ban_data = json.loads(row.get("value") or "{}")
+                        except Exception:
+                            continue
+
+                        banned_until = ban_data.get("banned_until")
+                        if not banned_until:
+                            banned_user_ids.add(banned_user_id)
+                            continue
+
+                        try:
+                            ban_until_dt = parse_supabase_datetime(banned_until)
+                            if ban_until_dt and ban_until_dt > get_moscow_now():
+                                banned_user_ids.add(banned_user_id)
+                        except Exception:
+                            continue
+                except Exception as ban_exc:
+                    logger.warning(f"⚠️ Не удалось собрать список банов пачкой: {ban_exc}")
+
                 for user in users:
                     limit = limits_map.get(user["user_id"], {})
                     user["daily_count"] = today_counts.get(user["user_id"], 0)
                     user["today_generations"] = user["daily_count"]
                     user["total_count"] = limit.get("total_count", 0)
                     user["last_reset"] = limit.get("last_reset", "")
-                    user["is_banned"] = self.get_user_ban(user["user_id"]) is not None
+                    user["is_banned"] = user["user_id"] in banned_user_ids
 
                 return users
             except Exception as e:
