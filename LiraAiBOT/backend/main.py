@@ -66,6 +66,13 @@ except ImportError:
     subprocess.check_call([sys.executable, "-m", "pip", "install", "huggingface_hub", "-q"])
     print("✅ huggingface_hub установлен!")
 
+try:
+    import jinja2
+except ImportError:
+    print("⚠️ Устанавливаю jinja2...")
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "jinja2", "-q"])
+    print("✅ jinja2 установлен!")
+
 # Проверяем ffmpeg для обработки голоса
 def check_ffmpeg():
     """Проверяет наличие ffmpeg в системе"""
