@@ -88,6 +88,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import RedirectResponse
 import uvicorn
 
 # Импорты API
@@ -198,8 +199,8 @@ async def shutdown_event():
 
 @app.get("/")
 async def root():
-    """Главная страница"""
-    return {"message": "LiraAI MultiAssistent API v1.0.0"}
+    """Корень домена ведёт в веб-интерфейс."""
+    return RedirectResponse(url="/web", status_code=302)
 
 @app.get("/health")
 async def health_check():

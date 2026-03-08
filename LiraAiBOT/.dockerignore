@@ -1,0 +1,52 @@
+# Git
+.git
+.gitignore
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+.eggs/
+
+# Виртуальные окружения
+venv/
+env/
+ENV/
+.venv
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Логи и данные (не нужны в контейнере)
+logs/
+data/
+temp/
+*.log
+
+# Тесты и документация
+test_*.py
+*_test.py
+*_REPORT.md
+*.md
+!README.md
+
+# Скрипты миграции
+migrate_*.py
+*.sql
+
+# Резервные копии
+*.bak
+*.backup
+.env.backup
+.env.bak
+
+# Docker
+Dockerfile
+.dockerignore
+docker-compose.yml
