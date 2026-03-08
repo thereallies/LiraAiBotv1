@@ -47,6 +47,4 @@ migrate_*.py
 .env.bak
 
 # Docker
-Dockerfile
-.dockerignore
 docker-compose.yml

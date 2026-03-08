@@ -23,8 +23,8 @@ COPY . .
 # Создаём директории для данных и логов
 RUN mkdir -p /app/data /app/logs /app/temp && chmod -R 777 /app
 
-# Проверяем, что index.py существует
-RUN test -f /app/index.py || (echo "❌ index.py не найден!" && exit 1)
+# Делаем entrypoint исполняемым
+RUN chmod +x /app/docker-entrypoint.sh
 
-# Запускаем через index.py (точка входа для bothost)
-CMD ["python", "index.py"]
+# Запускаем через универсальный entrypoint для Bothost
+CMD ["/app/docker-entrypoint.sh"]
