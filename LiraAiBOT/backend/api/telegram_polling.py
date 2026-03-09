@@ -204,6 +204,43 @@ def _escape_markdown(text: Any) -> str:
     return value
 
 
+def _clean_markdown_formatting(text: str) -> str:
+    """
+    Удаляет markdown-разметку из текста LLM для чистого отображения.
+    Убирает **, *, __, _ но сохраняет структуру текста.
+    """
+    if not text:
+        return ""
+    
+    # Убираем **жирный** → жирный
+    text = text.replace("**", "")
+    
+    # Убираем *курсив* (но не звездочки в списках)
+    # Заменяем *текст* на текст, но не * в начале строки (списки)
+    text = re.sub(r'(?<!\n)\*([^*]+)\*(?!\n)', r'\1', text)
+    
+    # Убираем __подчёркивание__
+    text = text.replace("__", "")
+    text = re.sub(r'(?<!\n)_([^_]+)_(?!\n)', r'\1', text)
+    
+    # Убираем `код`
+    text = text.replace("`", "")
+    
+    # Убираем [ссылка](url) → ссылка
+    text = re.sub(r'\[([^\]]+)\]\([^)]+\)', r'\1', text)
+    
+    # Убираем заголовки # → пустая строка
+    text = re.sub(r'^#+\s*', '', text, flags=re.MULTILINE)
+    
+    # Убираем > цитаты
+    text = re.sub(r'^>\s*', '', text, flags=re.MULTILINE)
+    
+    # Очищаем лишние пустые строки
+    text = re.sub(r'\n{3,}', '\n\n', text)
+    
+    return text.strip()
+
+
 def _format_ban_status(ban_info: Optional[Dict[str, Any]]) -> str:
     """Форматирует статус бана для карточки пользователя."""
     if not ban_info:
@@ -2442,9 +2479,11 @@ async def handle_feedback_bot_message(chat_id: str, user_id: str, text: str, is_
         
         # Отправляем ответ
         logger.info(f"[FeedbackBot] 📤 Отправляю ответ в группу {chat_id}...")
-        await send_telegram_message(chat_id, response)
+        # Очищаем ответ от markdown-разметки для чистого отображения
+        clean_response = _clean_markdown_formatting(response)
+        await send_telegram_message(chat_id, clean_response)
         logger.info(f"[FeedbackBot] ✅ Обработка сообщения завершена успешно")
-        
+
     except Exception as e:
         logger.error(f"[FeedbackBot] ❌ Ошибка при обработке сообщения: {e}", exc_info=True)
         await send_telegram_message(chat_id, "Извините, произошла ошибка при обработке вашего сообщения.")
@@ -2618,9 +2657,11 @@ async def handle_feedback_bot_photo(chat_id: str, user_id: str, message: Dict[st
         
         # Отправляем ответ
         logger.info(f"[FeedbackBot] 📤 Отправляю ответ в группу {chat_id}...")
-        await send_telegram_message(chat_id, response)
+        # Очищаем ответ от markdown-разметки для чистого отображения
+        clean_response = _clean_markdown_formatting(response)
+        await send_telegram_message(chat_id, clean_response)
         logger.info(f"[FeedbackBot] ✅ Обработка фото завершена успешно")
-        
+
     except Exception as e:
         logger.error(f"Ошибка при обработке фото FeedbackBot: {e}")
         await send_telegram_message(chat_id, "Извините, произошла ошибка при обработке изображения.")
@@ -2756,7 +2797,9 @@ async def handle_feedback_bot_voice(chat_id: str, user_id: str, message: Dict[st
         
         # Отправляем ответ
         logger.info(f"[FeedbackBot] 📤 Отправляю ответ в группу {chat_id}...")
-        await send_telegram_message(chat_id, response)
+        # Очищаем ответ от markdown-разметки для чистого отображения
+        clean_response = _clean_markdown_formatting(response)
+        await send_telegram_message(chat_id, clean_response)
         logger.info(f"[FeedbackBot] ✅ Обработка голосового сообщения завершена успешно")
         
     except Exception as e:
@@ -3057,7 +3100,9 @@ async def handle_text_message(chat_id: str, user_id: str, text: str, is_group: b
             await send_telegram_message(chat_id, "❌ Не удалось получить ответ. Попробуйте другую модель.")
             return
 
-        await send_telegram_message(chat_id, response)
+        # Очищаем ответ от markdown-разметки для чистого отображения
+        clean_response = _clean_markdown_formatting(response)
+        await send_telegram_message(chat_id, clean_response)
 
     except Exception as e:
         logger.error(f"Ошибка при обработке текстового сообщения: {e}", exc_info=True)
