@@ -884,6 +884,21 @@ async def web_chat(request: Request, payload: WebChatRequest):
 @router.post("/api/web/image/generate")
 async def web_generate_image(request: Request, payload: WebChatRequest):
     session = _get_session_user(request)
+    db.add_or_update_user(session["user_id"])
+    limit_info = db.check_generation_limit(session["user_id"])
+
+    if not limit_info.get("allowed", True):
+        daily_limit = limit_info.get("daily_limit", 3)
+        limit_text = "∞" if daily_limit == -1 else str(daily_limit)
+        raise HTTPException(
+            status_code=429,
+            detail=(
+                f"Превышен дневной лимит генерации изображений. "
+                f"Использовано: {limit_info.get('daily_count', 0)}/{limit_text}. "
+                f"Сброс: {limit_info.get('reset_time', 'позже')}."
+            ),
+        )
+
     image_data = await image_generator.generate_image(payload.message)
     if not image_data:
         raise HTTPException(status_code=502, detail="Image generation failed")

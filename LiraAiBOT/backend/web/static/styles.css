@@ -540,7 +540,8 @@ textarea:focus {
   gap: 12px;
   min-width: 0;
   min-height: calc(100vh - 28px);
-  overflow: hidden;
+  overflow-x: hidden;
+  overflow-y: auto;
 }
 
 .workspace-header {
@@ -614,6 +615,8 @@ textarea:focus {
   display: grid;
   gap: 12px;
   min-height: 0;
+  overflow: hidden;
+  align-content: start;
 }
 
 .metric-ribbon {
@@ -1041,6 +1044,7 @@ textarea {
   min-height: 0;
   height: 100%;
   position: relative;
+  overflow: hidden;
 }
 
 .chat-main-panel {
@@ -1049,6 +1053,7 @@ textarea {
   grid-template-rows: auto auto minmax(0, 1fr);
   gap: 10px;
   min-height: 0;
+  overflow: hidden;
 }
 
 .chat-main-panel.is-empty-view {
@@ -1481,6 +1486,20 @@ textarea {
     overflow: visible;
   }
 
+  .view-panel.active,
+  .chat-layout,
+  .chat-main-panel,
+  .chat-canvas,
+  .chat-history-panel,
+  .tool-layout,
+  .overview-grid,
+  .admin-grid-top,
+  .admin-grid-bottom {
+    min-height: auto;
+    height: auto;
+    overflow: visible;
+  }
+
   .chat-toolbar {
     grid-template-columns: 1fr;
   }
@@ -1537,12 +1556,107 @@ textarea {
     order: 2;
     min-height: 200px;
   }
+
+  .workspace {
+    gap: 10px;
+  }
+
+  .workspace-header {
+    padding: 14px 16px;
+    border-radius: 18px;
+    gap: 12px;
+  }
+
+  .workspace-header h1 {
+    font-size: 28px;
+    line-height: 1;
+  }
+
+  .topbar-caption {
+    font-size: 11px;
+  }
+
+  .workspace-meta {
+    gap: 8px;
+  }
+
+  .status-pill {
+    padding: 7px 10px;
+    font-size: 11px;
+  }
+
+  .panel-card,
+  .metric-card {
+    padding: 12px;
+    border-radius: 18px;
+  }
+
+  .soft-btn,
+  .input-select,
+  .mobile-tab {
+    min-height: 46px;
+    padding: 10px 12px;
+    border-radius: 14px;
+  }
+
+  .chat-feed {
+    padding: 10px;
+    gap: 8px;
+  }
+
+  .chat-bubble {
+    padding: 10px 12px 9px;
+    border-radius: 16px 16px 16px 10px;
+    line-height: 1.45;
+  }
+
+  .chat-bubble.user {
+    border-radius: 16px 16px 10px 16px;
+  }
+
+  .chat-bubble strong {
+    font-size: 11px;
+    margin-bottom: 4px;
+  }
+
+  .copy-answer-btn {
+    margin-top: 8px;
+    padding: 6px 10px;
+    font-size: 11px;
+  }
+
+  .chat-canvas,
+  .chat-history-panel,
+  .stack-list,
+  .admin-users,
+  .chart-box,
+  .image-result,
+  .text-result {
+    border-radius: 16px;
+  }
+
+  .session-item {
+    padding: 10px;
+    border-radius: 12px;
+  }
+
+  .session-delete-btn {
+    width: 32px;
+    height: 32px;
+    border-radius: 10px;
+  }
+
+  .user-row,
+  .stack-item {
+    padding: 12px;
+    border-radius: 14px;
+  }
 }
 
 @media (max-width: 640px) {
   .landing-body,
   .app-body {
-    padding: 12px;
+    padding: 8px;
   }
 
   .hero-panel,
@@ -1550,18 +1664,19 @@ textarea {
   .panel-card,
   .metric-card,
   .workspace-header {
-    padding: 20px;
-    border-radius: 22px;
+    padding: 14px;
+    border-radius: 16px;
   }
 
   h1 {
-    font-size: 40px;
+    font-size: 28px;
     max-width: 10ch;
   }
 
   .hero-copy,
   .auth-copy {
-    font-size: 17px;
+    font-size: 14px;
+    line-height: 1.5;
   }
 
   .hero-visual-frame {
@@ -1573,7 +1688,7 @@ textarea {
   }
 
   .workspace-header h1 {
-    font-size: 42px;
+    font-size: 24px;
   }
 
   .dev-login-row {
@@ -1581,15 +1696,50 @@ textarea {
   }
 
   .status-pill {
-    padding: 9px 12px;
+    padding: 6px 9px;
+    font-size: 10px;
   }
 
   .nav-item span {
-    font-size: 20px;
+    font-size: 16px;
   }
 
   .metric-card strong {
-    font-size: 32px;
+    font-size: 24px;
+  }
+
+  .brand-mark {
+    width: 38px;
+    height: 38px;
+    border-radius: 12px;
+    font-size: 18px;
+  }
+
+  .brand-title {
+    font-size: 15px;
+  }
+
+  .brand-subtitle,
+  .profile-level,
+  .panel-head span,
+  .chat-history-head span,
+  .stack-item small,
+  .user-meta {
+    font-size: 12px;
+  }
+
+  .nav-item {
+    padding: 9px 10px;
+    border-radius: 10px;
+  }
+
+  .nav-item small {
+    font-size: 10px;
+  }
+
+  .mobile-menu-btn {
+    padding: 10px 12px;
+    border-radius: 12px;
   }
 
   .chat-feed,
@@ -1603,6 +1753,7 @@ textarea {
 
   .chat-bubble {
     max-width: 100%;
+    font-size: 14px;
   }
 
   .chat-canvas.is-empty .chat-composer {
@@ -1616,12 +1767,18 @@ textarea {
     min-height: 48px;
     padding: 12px 14px;
     border-radius: 18px;
+    font-size: 15px;
   }
 
   #chat-submit-btn,
   .chat-canvas.is-empty .chat-composer .primary-btn {
     min-height: 48px;
     border-radius: 18px;
+    font-size: 15px;
+  }
+
+  #chat-submit-btn {
+    width: 100%;
   }
 
   .chat-canvas.is-empty .chat-feed {
@@ -1649,13 +1806,57 @@ textarea {
   }
 
   .chat-canvas {
-    min-height: 52vh;
-    padding: 10px;
+    min-height: auto;
+    padding: 8px;
   }
 
   .chat-history-panel {
-    padding: 10px;
+    padding: 8px;
     min-height: 180px;
+  }
+
+  .chat-layout,
+  .tool-layout,
+  .overview-grid,
+  .admin-grid-top,
+  .admin-grid-bottom,
+  .metric-ribbon {
+    gap: 10px;
+  }
+
+  .metric-card {
+    padding: 10px;
+  }
+
+  .metric-card span {
+    font-size: 12px;
+  }
+
+  .panel-head.compact h2,
+  h2 {
+    font-size: 17px;
+  }
+
+  .quick-card {
+    padding: 10px;
+    border-radius: 12px;
+  }
+
+  .quick-card strong {
+    font-size: 14px;
+  }
+
+  .quick-card small {
+    font-size: 12px;
+  }
+
+  .user-actions {
+    gap: 8px;
+  }
+
+  .mini-btn {
+    padding: 8px 12px;
+    font-size: 12px;
   }
 
   .landing-shell,
@@ -1665,6 +1866,20 @@ textarea {
   .chat-main-panel {
     min-height: auto;
     height: auto;
+    overflow: visible;
+  }
+
+  .chat-canvas,
+  .chat-history-panel,
+  .tool-layout,
+  .overview-grid,
+  .admin-grid-top,
+  .admin-grid-bottom,
+  .stack-list,
+  .admin-users,
+  .chart-box {
+    height: auto;
+    max-height: none;
     overflow: visible;
   }
 }
